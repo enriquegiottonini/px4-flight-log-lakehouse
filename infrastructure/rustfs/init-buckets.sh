@@ -11,4 +11,19 @@ for bucket in $BUCKETS; do
   fi
 done
 
+# Read-only CORS for browser clients (re-applied every run, so edits to CORS_ORIGINS take effect).
+if [ -n "${CORS_BUCKET:-}" ]; then
+  origins=$(printf '"%s",' $CORS_ORIGINS | sed 's/,$//')
+  aws s3api put-bucket-cors --bucket "$CORS_BUCKET" --cors-configuration "{
+    \"CORSRules\": [{
+      \"AllowedOrigins\": [$origins],
+      \"AllowedMethods\": [\"GET\", \"HEAD\"],
+      \"AllowedHeaders\": [\"*\"],
+      \"ExposeHeaders\": [\"ETag\", \"Content-Length\", \"Content-Range\"],
+      \"MaxAgeSeconds\": 3000
+    }]
+  }"
+  echo "cors applied:   s3://$CORS_BUCKET <- $CORS_ORIGINS (GET, HEAD)"
+fi
+
 aws s3 ls

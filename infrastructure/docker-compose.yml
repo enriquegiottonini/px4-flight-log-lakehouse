@@ -39,6 +39,12 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
       - rustfs-data:/data
+    networks:
+      default:
+        # One S3 address that works everywhere: containers resolve this alias to RustFS, and
+        # browsers resolve any *.localhost to 127.0.0.1 (the published port below). Lakekeeper
+        # hands this endpoint to clients, including DuckDB-WASM in its web UI.
+        aliases: [rustfs.localhost]
     ports:
       - "127.0.0.1:9000:9000"  # S3 API
       - "127.0.0.1:9001:9001"  # web console
@@ -61,10 +67,107 @@ services:
       AWS_ENDPOINT_URL: http://rustfs:9000
       AWS_CONFIG_FILE: /scripts/aws-config  # forces path-style addressing
       BUCKETS: landing lakehouse reports
+      # Browser origins allowed to read s3://lakehouse (Lakekeeper UI's DuckDB-WASM query engine)
+      CORS_BUCKET: lakehouse
+      CORS_ORIGINS: http://localhost:8181 http://127.0.0.1:8181
     volumes:
       - ./rustfs:/scripts:ro
     depends_on:
       rustfs:
+        condition: service_healthy
+    restart: "no"
+
+  # --- Phase 3: Iceberg catalog (Lakekeeper) + SQL engine (Trino) ---------------
+
+  # Runs once: creates/upgrades Lakekeeper's tables in the lakekeeper database
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:${LAKEKEEPER_TAG:?set LAKEKEEPER_TAG in .env}
+    command: ["migrate"]
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://lakekeeper:${LAKEKEEPER_DB_PASSWORD}@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://lakekeeper:${LAKEKEEPER_DB_PASSWORD}@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_ENCRYPTION_KEY:?set LAKEKEEPER_ENCRYPTION_KEY in .env}
+      # info everywhere, except the startup "Authentication is disabled" warning: running without
+      # auth is a deliberate non-goal (ports are bound to 127.0.0.1). Drop the override if auth is added.
+      RUST_LOG: info,lakekeeper::service::authn=error
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Iceberg REST catalog: /catalog (Iceberg REST spec), /management (warehouses), /ui (web UI)
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:${LAKEKEEPER_TAG}
+    command: ["serve"]
+    environment: *lakekeeper-env
+    ports:
+      - "127.0.0.1:8181:8181"
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Runs once: accepts the terms (bootstrap) and creates warehouse "px4" on s3://lakehouse/
+  lakekeeper-bootstrap:
+    image: curlimages/curl:${CURL_TAG:?set CURL_TAG in .env}
+    entrypoint: ["/bin/sh", "/scripts/bootstrap.sh"]
+    environment:
+      LAKEKEEPER_URL: http://lakekeeper:8181
+      WAREHOUSE: px4
+      S3_BUCKET: lakehouse
+      # Stored in the warehouse and handed to clients: must resolve in containers AND the browser
+      S3_ENDPOINT: http://rustfs.localhost:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - ./lakekeeper:/scripts:ro
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Single-node SQL engine; stores nothing itself. UI on http://localhost:8085
+  trino:
+    image: trinodb/trino:${TRINO_TAG:?set TRINO_TAG in .env}
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}  # read by ${ENV:...} in catalog/iceberg.properties
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - ./trino/etc/config.properties:/etc/trino/config.properties:ro
+      - ./trino/etc/jvm.config:/etc/trino/jvm.config:ro
+      - ./trino/catalog:/etc/trino/catalog:ro
+    ports:
+      - "127.0.0.1:8085:8080"
+    mem_limit: 3g  # 2 GB heap (jvm.config) + off-heap headroom
+    healthcheck:
+      test: ["CMD", "/usr/lib/trino/bin/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      lakekeeper-bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Runs once: creates the bronze/silver/gold/audit schemas through Trino (idempotent)
+  trino-init:
+    image: trinodb/trino:${TRINO_TAG}
+    entrypoint: ["trino", "--server", "http://trino:8080", "--user", "init", "--file", "/scripts/init-schemas.sql"]
+    volumes:
+      - ./trino/init:/scripts:ro
+    healthcheck:
+      disable: true  # the image's built-in check is for the server, not this CLI job
+    depends_on:
+      trino:
         condition: service_healthy
     restart: "no"
 

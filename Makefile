@@ -2,12 +2,12 @@
 SHELL := /bin/bash
 COMPOSE := docker compose  # finds infrastructure/docker-compose.yml via COMPOSE_FILE in .env
 # One-shot services that must exit 0 for the stack to count as up (grows in later phases)
-INIT_JOBS := rustfs-init
+INIT_JOBS := rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init
 -include .env
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps logs config psql s3
+.PHONY: help env up down reset ps logs config psql s3 trino
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-8s %s\n", $$1, $$2}'
@@ -43,3 +43,7 @@ psql:  ## Open psql as the admin user: make psql [DB=lakekeeper]
 
 s3:  ## Run an AWS CLI s3 command against RustFS: make s3 ARGS="ls s3://landing"
 	$(COMPOSE) run --rm --no-deps --entrypoint aws rustfs-init s3 $(or $(ARGS),ls)
+
+trino:  ## Trino SQL shell on the iceberg catalog, or run one statement: make trino SQL="show schemas"
+	@if [ -n "$(SQL)" ]; then $(COMPOSE) exec trino trino --catalog iceberg --execute "$(SQL)"; \
+	else $(COMPOSE) exec trino trino --catalog iceberg; fi

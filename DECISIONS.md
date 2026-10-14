@@ -58,7 +58,8 @@ One entry per decision. Format: context → decision → consequences. Newer dec
   - Its state lives in a `lakekeeper` Postgres database.
   - Warehouse `px4` on `s3://lakehouse/`.
   - No auth.
-  - STS / vended credentials off; Trino and PyIceberg use static S3 keys.
+  - STS / vended credentials **on** (revised 2026-10-13, after Phase 3): RustFS supports STS `AssumeRole`, and the Lakekeeper web UI's DuckDB-WASM query engine (LoQE) can only read data with vended credentials. The warehouse endpoint is `http://rustfs.localhost:9000` (a compose network alias, and `*.localhost` → 127.0.0.1 in browsers), and `s3://lakehouse` gets a read-only CORS rule for the UI origin. Trino keeps its own static keys and `http://rustfs:9000`.
+  - The UI's "Authentication is OFF" banner stays: it's shown whenever no OIDC provider is configured. Only the matching startup log line is filtered.
 - **Consequences:**
   - Gains: a standard REST catalog shared by Trino and PyIceberg, and a web UI for warehouses, namespaces, tables and snapshots.
   - Costs: three more services (migrate, serve, bootstrap) and a young 0.x dependency.

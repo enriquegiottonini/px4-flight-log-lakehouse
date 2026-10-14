@@ -24,7 +24,7 @@ This file is the project's **build plan** and the **working rules** for Claude C
 | Data acquisition via an API ("API-Ubuntu" container in the example) | The `drone_ingest` package, inside the Airflow image, consumes the public PX4 Flight Review API (`dbinfo` index + ULog files). See D-001. |
 | Storage in a DBMS | Apache Iceberg tables on RustFS (S3), catalogued by **Lakekeeper** (Iceberg REST catalog) whose state lives in **PostgreSQL**; Trino is the SQL engine. |
 | Visualization (Dash suggested) | dbt Charts (`dct serve`) over the gold tables via Trino. |
-| Containerization (≥ 2 containers) | Docker Compose with ~12 services (section 5). |
+| Containerization (≥ 2 containers) | Docker Compose with ~13 services (section 5). |
 | Integration API → DB → visualization | Airflow DAGs chained by *assets*; `infrastructure/scripts/smoke_test.sh` checks the full flow. |
 | Class presentation | Script and checklist in Phase 9. |
 
@@ -162,14 +162,23 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 
 **Catalog wiring (Lakekeeper):**
 - `lakekeeper-migrate` (`migrate`) creates the schema in the `lakekeeper` db, then `lakekeeper` (`serve`, port 8181) starts.
-- `lakekeeper-bootstrap` (curl, run once) does two POSTs:
-  - `POST /management/v1/bootstrap` with `{"accept-terms-of-use": true}`.
-  - `POST /management/v1/warehouse` with `infrastructure/lakekeeper/create-warehouse.json`: warehouse `px4`, `storage-profile` `{type: s3, bucket: lakehouse, endpoint: http://rustfs:9000, region: us-east-1, path-style-access: true, flavor: s3-compat, sts-enabled: false}` and an access-key `storage-credential`.
-- Secrets in `.env`: `LAKEKEEPER__PG_ENCRYPTION_KEY`, `LAKEKEEPER__PG_DATABASE_URL_READ` / `_WRITE`.
+- `lakekeeper-bootstrap` (curl image, run once: `infrastructure/lakekeeper/bootstrap.sh`) does two POSTs:
+  - `POST /management/v1/bootstrap` with `{"accept-terms-of-use": true}` → `204`. A later call → `400 CatalogAlreadyBootstrapped`, treated as success.
+  - `POST /management/v1/warehouse` → `201`, skipped if `px4` already exists. Body: warehouse `px4`, `storage-profile` `{type: s3, bucket: lakehouse, endpoint: http://rustfs.localhost:9000, region: us-east-1, path-style-access: true, flavor: s3-compat, sts-enabled: true, sts-endpoint: <same>, remote-signing-enabled: false}` and an access-key `storage-credential`.
+  - The JSON is built in the script from env vars, so no S3 secret is committed. `project-id` is deprecated in v0.14 and omitted (the default project is used).
+  - Lakekeeper validates the storage on creation (writes and deletes a test object), so a `201` proves Lakekeeper → RustFS works.
+- `trino-init` (Trino CLI, run once: `infrastructure/trino/init/init-schemas.sql`) creates `bronze`, `silver`, `gold` and `audit` with **explicit locations** `s3://lakehouse/<layer>`. Otherwise Lakekeeper defaults every namespace to the warehouse root, and tables from all layers would end up side by side.
+- Secrets in `.env`: `LAKEKEEPER_ENCRYPTION_KEY` (→ `LAKEKEEPER__PG_ENCRYPTION_KEY`; keep it stable, it decrypts the stored S3 keys) and `LAKEKEEPER_DB_PASSWORD` (→ `LAKEKEEPER__PG_DATABASE_URL_READ` / `_WRITE`).
 - No OIDC: auth is disabled (local toy), in line with the proposal's "no auth" non-goal.
-- STS / vended credentials are **off** (RustFS STS support is unverified). Trino and PyIceberg use their own static S3 keys. Try `sts-enabled: true` later as a stretch goal.
+  - The startup log warning is filtered with `RUST_LOG=info,lakekeeper::service::authn=error`.
+  - The web UI's red banner ("Authentication is OFF") can't be hidden: the server injects `__lkauth='false'` into the page, and the banner shows whenever auth isn't configured.
+- **STS / vended credentials are on** (D-007, revised), so the web UI's **LoQE** (Local Query Engine, DuckDB-WASM in the browser) can read tables, e.g. the table PREVIEW tab:
+  - RustFS supports STS `AssumeRole`. Lakekeeper vends short-lived keys + session token, scoped to the table's prefix.
+  - **Endpoint `http://rustfs.localhost:9000`** works in both places: containers resolve it through a compose network alias on `rustfs`, and browsers (Chrome/Firefox) resolve `*.localhost` to 127.0.0.1 → published port 9000.
+  - **CORS:** `rustfs-init` puts a read-only (GET/HEAD) CORS rule on `s3://lakehouse` for `http://localhost:8181` / `http://127.0.0.1:8181`.
+  - Trino doesn't ask for vended credentials (`vended-credentials-enabled=false`): it keeps its own keys and `http://rustfs:9000`. PyIceberg can do either.
 
-`infrastructure/trino/catalog/iceberg.properties` (replaces the proposal's JDBC block; verify names against Trino 483):
+`infrastructure/trino/catalog/iceberg.properties` (replaces the proposal's JDBC block; names verified against Trino 483, which uses **`fs.s3.enabled`**, not `fs.native-s3.enabled`):
 
 ```properties
 connector.name=iceberg
@@ -179,10 +188,10 @@ iceberg.rest-catalog.warehouse=px4
 iceberg.rest-catalog.vended-credentials-enabled=false
 iceberg.file-format=PARQUET
 iceberg.compression-codec=ZSTD
-fs.native-s3.enabled=true
+fs.s3.enabled=true
 s3.endpoint=http://rustfs:9000
-s3.path-style-access=true
 s3.region=us-east-1
+s3.path-style-access=true
 s3.aws-access-key=${ENV:S3_ACCESS_KEY}
 s3.aws-secret-key=${ENV:S3_SECRET_KEY}
 ```
@@ -203,8 +212,9 @@ catalog = RestCatalog("px4", uri="http://lakekeeper:8181/catalog", warehouse="px
 | `rustfs-init` | `amazon/aws-cli:2.37.13` (creates buckets) | — | Phase 2 |
 | `lakekeeper-migrate` | `quay.io/lakekeeper/catalog:v0.14.0` (`migrate`) | — | Phase 3 |
 | `lakekeeper` | `quay.io/lakekeeper/catalog:v0.14.0` (`serve`) | 8181 (REST + UI) | Phase 3 |
-| `lakekeeper-bootstrap` | `curlimages/curl` (bootstrap + warehouse) | — | Phase 3 |
-| `trino` | `trinodb/trino:483` | 8085 | Phase 3 |
+| `lakekeeper-bootstrap` | `curlimages/curl:8.22.0` (bootstrap + warehouse) | — | Phase 3 |
+| `trino` | `trinodb/trino:483` (`mem_limit: 3g`, heap 2 GB) | 8085 | Phase 3 |
+| `trino-init` | `trinodb/trino:483` (CLI; creates the schemas) | — | Phase 3 |
 | `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` | 8080 | Phase 5 |
 | `charts` | build `infrastructure/charts/Dockerfile` (`dbt-charts[trino]==0.9.1`) | 8088 | Phase 8 |
 
@@ -257,7 +267,7 @@ Evolution of `docker compose config --services`:
 | Tag | Services |
 | --- | --- |
 | `phase-2` | `postgres`, `rustfs`, `rustfs-init` |
-| `phase-3` | + `lakekeeper-migrate`, `lakekeeper`, `lakekeeper-bootstrap`, `trino` |
+| `phase-3` | + `lakekeeper-migrate`, `lakekeeper`, `lakekeeper-bootstrap`, `trino`, `trino-init` |
 | `phase-5` | + 4 Airflow services |
 | `phase-8` | + `charts` |
 
@@ -325,23 +335,41 @@ make down && make up                    # data kept; `make reset` deletes it
 - Trino as an engine with no storage of its own.
 
 Checklist:
-- [ ] `lakekeeper-migrate` → `lakekeeper` (healthcheck `/home/nonroot/lakekeeper healthcheck`) → `lakekeeper-bootstrap` creates warehouse `px4` on `s3://lakehouse/`.
-- [ ] `infrastructure/trino/etc/` (`config.properties`, `jvm.config` with `-Xmx2G`) and the REST `infrastructure/trino/catalog/iceberg.properties` from section 5. Verify property names against Trino 483.
-- [ ] Re-running `lakekeeper-bootstrap` is harmless: an "already bootstrapped" / "warehouse exists" response is treated as success.
-- [ ] `CREATE SCHEMA` for `bronze`, `silver`, `gold` and `audit`.
-- [ ] `CREATE TABLE iceberg.bronze.smoke` creates files visible in RustFS.
-- [ ] `SELECT` still works after restarting everything.
+- [x] `lakekeeper-migrate` → `lakekeeper` (healthcheck `/home/nonroot/lakekeeper healthcheck`) → `lakekeeper-bootstrap` creates warehouse `px4` on `s3://lakehouse/`.
+- [x] `infrastructure/trino/etc/` (`config.properties` with 1 GB query memory caps, `jvm.config` with `-Xmx2G`) and the REST `iceberg.properties` from section 5. Property names were verified against Trino 483, which caught `fs.s3.enabled`.
+- [x] Re-running `lakekeeper-bootstrap` is harmless: `CatalogAlreadyBootstrapped` and an existing warehouse both count as success.
+- [x] `trino-init` creates `bronze`, `silver`, `gold` and `audit`, each with an explicit `s3://lakehouse/<layer>` location (idempotent).
+- [x] `CREATE TABLE iceberg.bronze.smoke` + 2 inserts → files at `s3://lakehouse/bronze/smoke-<uuid>/{data/ts_day=…/*.parquet, metadata/*.metadata.json, *.avro}`, plus 3 snapshots, and time travel returns the first batch only.
+- [x] `SELECT` still works after `make down && make up` (7 rows, 3 snapshots).
+- [x] Lakekeeper UI → `px4 › bronze › smoke` → **PREVIEW** shows the rows: DuckDB-WASM in the browser reads the Parquet files from RustFS with vended STS credentials.
+- Footprint: Trino ~830 MiB of RAM at idle (limit 3 GiB), Lakekeeper ~30 MiB. A cold start from `make reset` takes ~20 s. `INIT_JOBS` is now `rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init`.
+
+Gotchas found:
+- Trino 483 needs `fs.s3.enabled`. The `fs.native-s3.enabled` from the proposal doesn't exist in this version.
+- Without explicit schema locations, every Lakekeeper namespace gets the warehouse root as its location.
+- `CREATE SCHEMA IF NOT EXISTS` never changes an existing location, so `make reset` after editing `init-schemas.sql`. The same goes for the warehouse storage profile in `bootstrap.sh` (create-only).
+- The Trino image's `jvm.config` uses 80 % of available RAM, so it's overridden with `-Xmx2G` and a container limit.
+- The Trino image ships a HEALTHCHECK, so `trino-init` (same image, CLI only) must disable it.
+- The empty create-table snapshot has no `added-records` key: use `element_at(summary, 'added-records')`, because `summary['added-records']` errors on missing keys.
+
 ```bash
-docker compose exec trino trino --catalog iceberg
-  CREATE TABLE bronze.smoke (id int, ts timestamp(6)) WITH (partitioning = ARRAY['day(ts)']);
-  INSERT INTO bronze.smoke VALUES (1, now()), (2, now());
-  SELECT * FROM bronze."smoke$snapshots";          -- snapshot history
+make up
+make trino                               # interactive SQL on the iceberg catalog (\q to quit)
+make trino SQL="show schemas"
+  CREATE TABLE bronze.smoke (id integer, name varchar, ts timestamp(6) with time zone)
+    WITH (partitioning = ARRAY['day(ts)']);
+  INSERT INTO bronze.smoke SELECT nationkey, name, current_timestamp FROM tpch.tiny.nation;
+  SELECT snapshot_id, operation, element_at(summary, 'total-records') FROM bronze."smoke$snapshots";
   SELECT * FROM bronze.smoke FOR VERSION AS OF <snapshot_id>;   -- time travel
-open http://localhost:8181/ui                       # Lakekeeper UI: warehouse → namespaces → tables → snapshots
-curl -s localhost:8181/management/v1/warehouse | jq             # warehouses + storage profile
-curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | jq   # REST config handshake that Trino/PyIceberg perform
-curl -s localhost:8181/catalog/v1/<prefix>/namespaces | jq      # prefix comes from the config response
-open http://localhost:8085                          # Trino query UI
+  SELECT * FROM bronze."smoke$files";                            -- Parquet files behind the table
+  SHOW CREATE SCHEMA bronze;                                     -- location = s3://lakehouse/bronze/
+make s3 ARGS="ls --recursive s3://lakehouse/bronze/"             # data/ + metadata/ per table
+open http://localhost:8181/ui/                     # Lakekeeper UI: warehouse → namespaces → tables → snapshots
+curl -s localhost:8181/management/v1/warehouse | jq             # warehouse + storage profile (secret not returned)
+curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | jq   # REST config handshake; overrides.prefix = warehouse id
+curl -s localhost:8181/catalog/v1/<prefix>/namespaces | jq      # Iceberg REST API, as Trino/PyIceberg see it
+make psql DB=lakekeeper                                         # \dt: Lakekeeper's own tables (the catalog state)
+open http://localhost:8085/ui/                     # Trino query UI (any user name, no password)
 ```
 
 ### Phase 4: Ingestion (`drone_ingest`)
@@ -448,8 +476,8 @@ docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a 
 │   ├── docker-compose.yml       # relative paths resolve from this folder
 │   ├── postgres/init/           # creates the airflow and lakekeeper roles + databases
 │   ├── rustfs/                  # bucket init script + AWS CLI path-style config
-│   ├── lakekeeper/create-warehouse.json
-│   ├── trino/{etc,catalog}/
+│   ├── lakekeeper/bootstrap.sh  # bootstrap + warehouse px4 (JSON built from env vars)
+│   ├── trino/{etc,catalog,init}/  # server config, catalogs (iceberg, tpch), schema init SQL
 │   ├── airflow/Dockerfile       # Airflow + drone_ingest + dbt venv (build context: repo root)
 │   ├── charts/Dockerfile
 │   └── scripts/{wait-init.sh,smoke_test.sh}
@@ -463,8 +491,8 @@ Rule: files that configure, build or run services go in `infrastructure/`. Code 
 
 ## 9. Watched risks
 
-- **Lakekeeper is 0.x**: pinned to `v0.14.0` (released 2026-10-07), with `v0.13.6` as the fallback. Check that Trino 483 and PyIceberg 0.12 both talk to it in Phase 3 (Trino) and at the start of Phase 4 (PyIceberg writes, Trino reads).
-- **RustFS + Lakekeeper STS**: unverified, so vended credentials stay off and clients use static keys.
+- **Lakekeeper is 0.x**: pinned to `v0.14.0` (released 2026-10-07), with `v0.13.6` as the fallback. Trino 483 ↔ Lakekeeper is verified (Phase 3). PyIceberg 0.12 writing tables that Trino reads is still to verify at the start of Phase 4.
+- **RustFS + Lakekeeper STS**: verified (Phase 3). The browser path depends on `*.localhost` resolving to 127.0.0.1, which Chrome and Firefox do. Other browsers may need a `/etc/hosts` entry `127.0.0.1 rustfs.localhost`.
 - **Disk usage from full ULog**: ~9.3 GB/day against ~13 GiB free. Mitigated by the 1-day raw window, purge-before-fetch and the `MIN_FREE_DISK_GB` guard (D-004). Free up disk if a heavy upload day gets close to the limit.
 - **RustFS 1.0.x and dbt Charts 0.9.x are young**: versions pinned; standard S3 API only.
 - **ULog topic schema drift across firmware versions**: the parser tolerates missing fields (null column + a count in audit).
