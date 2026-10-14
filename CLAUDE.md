@@ -9,7 +9,7 @@ This file is the project's **build plan** and the **working rules** for Claude C
 ## 1. Working rules (for Claude)
 
 - Build **phase by phase** (section 7). Never start a phase while any checklist item in the previous one is red.
-- When a phase closes: commit + `git tag phase-N`, so the evolution can be inspected with `git diff phase-2 phase-3 -- docker-compose.yml`.
+- When a phase closes: commit + `git tag phase-N`, so the evolution can be inspected with `git diff phase-2 phase-3 -- infrastructure/`.
 - **Pin every version** (section 5). If a version breaks, pin the previous one before switching tools, and log it in `DECISIONS.md`.
 - Secrets only in `.env` (with a versioned `.env.example`). No credentials in YAML, DAGs or `profiles.yml`.
 - Code, docs and comments in English, with `snake_case` table and column names. Presentation material may be in Spanish.
@@ -25,7 +25,7 @@ This file is the project's **build plan** and the **working rules** for Claude C
 | Storage in a DBMS | Apache Iceberg tables on RustFS (S3), catalogued by **Lakekeeper** (Iceberg REST catalog) whose state lives in **PostgreSQL**; Trino is the SQL engine. |
 | Visualization (Dash suggested) | dbt Charts (`dct serve`) over the gold tables via Trino. |
 | Containerization (≥ 2 containers) | Docker Compose with ~12 services (section 5). |
-| Integration API → DB → visualization | Airflow DAGs chained by *assets*; `scripts/smoke_test.sh` checks the full flow. |
+| Integration API → DB → visualization | Airflow DAGs chained by *assets*; `infrastructure/scripts/smoke_test.sh` checks the full flow. |
 | Class presentation | Script and checklist in Phase 9. |
 
 ## 3. Real data source: PX4 Flight Review
@@ -164,12 +164,12 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 - `lakekeeper-migrate` (`migrate`) creates the schema in the `lakekeeper` db, then `lakekeeper` (`serve`, port 8181) starts.
 - `lakekeeper-bootstrap` (curl, run once) does two POSTs:
   - `POST /management/v1/bootstrap` with `{"accept-terms-of-use": true}`.
-  - `POST /management/v1/warehouse` with `lakekeeper/create-warehouse.json`: warehouse `px4`, `storage-profile` `{type: s3, bucket: lakehouse, endpoint: http://rustfs:9000, region: us-east-1, path-style-access: true, flavor: s3-compat, sts-enabled: false}` and an access-key `storage-credential`.
+  - `POST /management/v1/warehouse` with `infrastructure/lakekeeper/create-warehouse.json`: warehouse `px4`, `storage-profile` `{type: s3, bucket: lakehouse, endpoint: http://rustfs:9000, region: us-east-1, path-style-access: true, flavor: s3-compat, sts-enabled: false}` and an access-key `storage-credential`.
 - Secrets in `.env`: `LAKEKEEPER__PG_ENCRYPTION_KEY`, `LAKEKEEPER__PG_DATABASE_URL_READ` / `_WRITE`.
 - No OIDC: auth is disabled (local toy), in line with the proposal's "no auth" non-goal.
 - STS / vended credentials are **off** (RustFS STS support is unverified). Trino and PyIceberg use their own static S3 keys. Try `sts-enabled: true` later as a stretch goal.
 
-`trino/catalog/iceberg.properties` (replaces the proposal's JDBC block; verify names against Trino 483):
+`infrastructure/trino/catalog/iceberg.properties` (replaces the proposal's JDBC block; verify names against Trino 483):
 
 ```properties
 connector.name=iceberg
@@ -198,15 +198,15 @@ catalog = RestCatalog("px4", uri="http://lakekeeper:8181/catalog", warehouse="px
 
 | Service | Image (pinned tag in `.env`) | Host port | Introduced in |
 | --- | --- | --- | --- |
-| `postgres` | `postgres:17` | 5432 | Phase 2 |
+| `postgres` | `postgres:17.11` | 5432 | Phase 2 |
 | `rustfs` | `rustfs/rustfs:1.0.1` | 9000 API, 9001 console | Phase 2 |
-| `rustfs-init` | `amazon/aws-cli` (creates buckets) | — | Phase 2 |
+| `rustfs-init` | `amazon/aws-cli:2.37.13` (creates buckets) | — | Phase 2 |
 | `lakekeeper-migrate` | `quay.io/lakekeeper/catalog:v0.14.0` (`migrate`) | — | Phase 3 |
 | `lakekeeper` | `quay.io/lakekeeper/catalog:v0.14.0` (`serve`) | 8181 (REST + UI) | Phase 3 |
 | `lakekeeper-bootstrap` | `curlimages/curl` (bootstrap + warehouse) | — | Phase 3 |
 | `trino` | `trinodb/trino:483` | 8085 | Phase 3 |
-| `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` | 8080 | Phase 5 |
-| `charts` | build `charts/Dockerfile` (`dbt-charts[trino]==0.9.1`) | 8088 | Phase 8 |
+| `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` | 8080 | Phase 5 |
+| `charts` | build `infrastructure/charts/Dockerfile` (`dbt-charts[trino]==0.9.1`) | 8088 | Phase 8 |
 
 Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astronomer-cosmos==1.15.1`, `dbt-trino==1.10.6`, `pyiceberg==0.12.0`, `pyulog==1.2.4`, `dbt-charts==0.9.1` (needs Python 3.10–3.13).
 
@@ -288,17 +288,33 @@ uv run ulog2csv -m battery_status data/ulogs/<id>.ulg -o /tmp/csv
 ```
 
 ### Phase 2: Object storage (Postgres + RustFS)
-**Introduces:** Docker Compose basics (services, the internal network with service-name DNS, named volumes, `healthcheck` + `depends_on`, `.env`), S3-compatible storage, buckets, *path-style* addressing, "init" services that exit (`service_completed_successfully`), one Postgres with two databases (script in `postgres/init/`).
-- [ ] `docker-compose.yml`, `.env.example`, `Makefile` (`up`, `down`, `reset`, `ps`, `logs`).
-- [ ] Healthchecks on `postgres` and `rustfs`; `rustfs-init` creates `landing`, `lakehouse` and `reports`.
-- [ ] Buckets survive `make down && make up` and disappear with `make reset`.
+**Introduces:** Docker Compose basics (services, the internal network with service-name DNS, named volumes, `healthcheck` + `depends_on`, `.env`), S3-compatible storage, buckets, *path-style* addressing, "init" services that exit (`service_completed_successfully`), one Postgres with two databases (script in `infrastructure/postgres/init/`).
+- [x] `infrastructure/docker-compose.yml` plus root `Makefile` and `.env.example`. `COMPOSE_FILE` in `.env` lets plain `docker compose …` work from the repo root (`make` targets: `env`, `up`, `down`, `reset`, `ps`, `logs`, `config`, `psql`, `s3`).
+- [x] Healthchecks:
+  - `postgres` runs a real query against the `lakekeeper` db, so it's only healthy after the init script ran.
+  - `rustfs` checks `/health`.
+- [x] `rustfs-init` creates `landing`, `lakehouse` and `reports`, and is idempotent on re-runs.
+- [x] `infrastructure/postgres/init/` creates an `airflow` and a `lakekeeper` role, each owning its own database. `CONNECT` is revoked from `PUBLIC`, so one service's role is denied on the other's database.
+- [x] `make up` waits for init jobs: `up --wait` doesn't cover them, so `infrastructure/scripts/wait-init.sh` fails if one exits non-zero. Later phases add their jobs to `INIT_JOBS` in the Makefile.
+- [x] Data survives `make down && make up` and disappears with `make reset`, after which buckets and roles are recreated.
+- Footprint: Postgres ~25 MiB and RustFS ~100 MiB of RAM; the stack is up in ~20 s.
+
+Gotchas found:
+- The RustFS console lives at `/rustfs/console/`; `/` returns 403.
+- The AWS CLI needs `addressing_style = path` (`infrastructure/rustfs/aws-config`), because `<bucket>.rustfs` doesn't resolve on the compose network.
+- `infrastructure/postgres/init/` only runs on an empty volume: changing passwords in `.env` later needs `ALTER ROLE` or `make reset`.
+
 ```bash
-make up && docker compose ps
-open http://localhost:9001                                     # RustFS console
-docker compose run --rm rustfs-init aws --endpoint-url http://rustfs:9000 s3 ls
-docker compose exec postgres psql -U $POSTGRES_USER -l          # airflow and lakekeeper dbs
-docker network ls; docker volume ls                            # network and volumes created by compose
-docker compose exec postgres getent hosts rustfs               # internal DNS: services reach each other by name
+make env && make up                     # .env with random secrets, then start and wait
+make ps                                 # includes the finished rustfs-init job
+open http://localhost:9001/rustfs/console/   # log in with S3_ACCESS_KEY / S3_SECRET_KEY from .env
+make s3 ARGS="ls"                       # AWS CLI against RustFS (path-style)
+make s3 ARGS="ls --recursive s3://landing"
+make psql                               # \l lists airflow and lakekeeper with their owners
+make logs S=rustfs
+docker network ls; docker volume ls     # px4-lakehouse_default, px4-lakehouse_{postgres,rustfs}-data
+docker compose exec postgres getent hosts rustfs   # internal DNS: services reach each other by name
+make down && make up                    # data kept; `make reset` deletes it
 ```
 
 ### Phase 3: Iceberg + Lakekeeper + Trino
@@ -310,7 +326,7 @@ docker compose exec postgres getent hosts rustfs               # internal DNS: s
 
 Checklist:
 - [ ] `lakekeeper-migrate` → `lakekeeper` (healthcheck `/home/nonroot/lakekeeper healthcheck`) → `lakekeeper-bootstrap` creates warehouse `px4` on `s3://lakehouse/`.
-- [ ] `trino/etc/` (`config.properties`, `jvm.config` with `-Xmx2G`) and the REST `trino/catalog/iceberg.properties` from section 5. Verify property names against Trino 483.
+- [ ] `infrastructure/trino/etc/` (`config.properties`, `jvm.config` with `-Xmx2G`) and the REST `infrastructure/trino/catalog/iceberg.properties` from section 5. Verify property names against Trino 483.
 - [ ] Re-running `lakekeeper-bootstrap` is harmless: an "already bootstrapped" / "warehouse exists" response is treated as success.
 - [ ] `CREATE SCHEMA` for `bronze`, `silver`, `gold` and `audit`.
 - [ ] `CREATE TABLE iceberg.bronze.smoke` creates files visible in RustFS.
@@ -356,7 +372,7 @@ uv run python -c "from pyiceberg.catalog.rest import RestCatalog; …; print(cat
 
 ### Phase 5: Orchestration with Airflow 3
 **Introduces:** DAGs, tasks, operators, `LocalExecutor`, pools, retries with backoff, *dynamic task mapping* (one mapped task per ULog batch), *assets* (data-aware scheduling), `AIRFLOW_CONN_*` connections.
-- [ ] `airflow/Dockerfile`: Airflow 3.3.2 + `drone_ingest` + a dbt virtualenv at `/opt/dbt-venv`.
+- [ ] `infrastructure/airflow/Dockerfile` (build context = repo root; DAGs mounted from `dags/`): Airflow 3.3.2 + `drone_ingest` + a dbt virtualenv at `/opt/dbt-venv`.
 - [ ] Services `airflow-init`, `airflow-apiserver`, `airflow-scheduler` and `airflow-dag-processor`.
 - [ ] DAG `px4_ingest_daily` (02:00 America/Hermosillo, `catchup=False`): `api_healthcheck` → `snapshot_index` (a `ShortCircuitOperator` on 304 skips the rest) → `validate_manifest` → `load_index` → `purge_expired_ulogs` → `plan_ulogs` → `fetch_ulogs.expand(batch)` (pool `px4_pool`, 4 slots) → `parse_ulogs.expand(batch)` → emits `bronze.*` assets.
 - [ ] DAG `px4_backfill` (manual, `start_date`/`end_date`): the same ULog flow, **one `log_date` at a time with a purge between days**, so raw files never exceed one day.
@@ -411,7 +427,7 @@ docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a 
 ```
 
 ### Phase 9: Integration and presentation
-- [ ] `scripts/smoke_test.sh`: from a clean clone, `cp .env.example .env && make up`, trigger ingestion with `MAX_ULOGS_PER_RUN=20`, wait for the transform, check gold counts and that the report exists. Must exit 0.
+- [ ] `infrastructure/scripts/smoke_test.sh`: from a clean clone, `cp .env.example .env && make up`, trigger ingestion with `MAX_ULOGS_PER_RUN=20`, wait for the transform, check gold counts and that the report exists. Must exit 0.
 - [ ] `README.md` with startup steps, ports and the diagram.
 - [ ] Presentation script (~7 min), mapped to `task.txt`:
   - [ ] Problem statement (section 3).
@@ -426,18 +442,24 @@ docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a 
 ```text
 .
 ├── CLAUDE.md  DECISIONS.md  DESIGN_PROPOSAL.md  README.md
-├── definition/              # assignment + instructor example (do not modify)
-├── docker-compose.yml  .env.example  Makefile
-├── explore/                 # Phase 1 profiling scripts
-├── postgres/init/           # creates the airflow and lakekeeper databases
-├── lakekeeper/create-warehouse.json
-├── trino/{etc,catalog}/
-├── ingest/                  # drone_ingest package (pyproject, src/, tests/fixtures/)
-├── airflow/{Dockerfile,dags/}
-├── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/
-├── charts/Dockerfile
-└── scripts/smoke_test.sh
+├── Makefile  .env.example       # entry points: `make up`; .env sets COMPOSE_FILE and secrets
+├── definition/                  # assignment + instructor example (do not modify)
+├── infrastructure/              # everything that runs the platform (no business logic)
+│   ├── docker-compose.yml       # relative paths resolve from this folder
+│   ├── postgres/init/           # creates the airflow and lakekeeper roles + databases
+│   ├── rustfs/                  # bucket init script + AWS CLI path-style config
+│   ├── lakekeeper/create-warehouse.json
+│   ├── trino/{etc,catalog}/
+│   ├── airflow/Dockerfile       # Airflow + drone_ingest + dbt venv (build context: repo root)
+│   ├── charts/Dockerfile
+│   └── scripts/{wait-init.sh,smoke_test.sh}
+├── explore/                     # Phase 1 profiling scripts and reports
+├── ingest/                      # drone_ingest package (pyproject, src/, tests/fixtures/)
+├── dags/                        # Airflow DAGs (mounted into the Airflow containers)
+└── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/
 ```
+
+Rule: files that configure, build or run services go in `infrastructure/`. Code that moves or transforms data (`ingest/`, `dags/`, `dbt/`) stays at the root.
 
 ## 9. Watched risks
 

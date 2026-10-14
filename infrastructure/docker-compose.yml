@@ -1,0 +1,73 @@
+# PX4 flight-log lakehouse. Services are added phase by phase (CLAUDE.md section 7);
+# compare with `git diff phase-N phase-M -- infrastructure/docker-compose.yml`.
+# Relative paths below resolve from this folder (infrastructure/); variables come from the root .env.
+name: px4-lakehouse
+
+services:
+  # One Postgres, one database + role per consumer: airflow (Phase 5), lakekeeper (Phase 3).
+  postgres:
+    image: postgres:${POSTGRES_TAG:?set POSTGRES_TAG in .env}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      # Read only by postgres/init/01-create-databases.sh on the first start
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD in .env}
+      LAKEKEEPER_DB_PASSWORD: ${LAKEKEEPER_DB_PASSWORD:?set LAKEKEEPER_DB_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      # TCP only comes up after the init scripts finish, and the query proves the lakekeeper db exists
+      test: ["CMD-SHELL", "psql -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d lakekeeper -tAc 'select 1' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  # S3-compatible object storage: landing (raw API files), lakehouse (Iceberg), reports (rendered boards)
+  rustfs:
+    image: rustfs/rustfs:${RUSTFS_TAG:?set RUSTFS_TAG in .env}
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - rustfs-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"  # S3 API
+      - "127.0.0.1:9001:9001"  # web console
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # Runs once: creates the buckets (idempotent), then exits 0
+  rustfs-init:
+    image: amazon/aws-cli:${AWSCLI_TAG:?set AWSCLI_TAG in .env}
+    entrypoint: ["/bin/sh", "/scripts/init-buckets.sh"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://rustfs:9000
+      AWS_CONFIG_FILE: /scripts/aws-config  # forces path-style addressing
+      BUCKETS: landing lakehouse reports
+    volumes:
+      - ./rustfs:/scripts:ro
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres-data:
+  rustfs-data:
