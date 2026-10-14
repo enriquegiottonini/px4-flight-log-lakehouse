@@ -1,0 +1,89 @@
+{
+ "seed": 42,
+ "dbinfo_sample": {
+  "records": 200,
+  "defect_counts": {
+   "airframe_type_int": 64,
+   "wind_speed_sentinel": 184,
+   "wind_speed_real": 16,
+   "rating_junk": 6,
+   "rating_crash": 6,
+   "rating_good_great": 8,
+   "error_labels": 10,
+   "vehicle_uuid_empty": 36,
+   "flight_modes_empty": 10,
+   "flight_mode_unknown_id": 6,
+   "duration_overflow": 3,
+   "duration_zero": 10,
+   "mode_segment_overflow": 3,
+   "sitl": 24,
+   "ver_sw_release_empty": 4,
+   "estimator_unknown": 2,
+   "mav_type_fixed_wing": 19,
+   "mav_type_vtol": 19,
+   "mav_type_other": 12
+  }
+ },
+ "dbinfo_sample_next_day": {
+  "records": 205,
+  "diff_vs_sample": {
+   "insert": [
+    "77dcd230-ca66-44d8-96b8-1763c2af5065",
+    "967c3b67-0ccd-4981-befb-ea7a650463e8",
+    "cb0cf2b9-411f-4b36-8bb1-00490b7218c3",
+    "d09724a0-58ea-451a-80e3-775d69d04b21",
+    "ee236abc-60ca-42c9-91e0-868821f1d9f9"
+   ],
+   "update": [
+    "00f6c6a4-70b3-4b41-8cda-33a3d114fb74"
+   ],
+   "unchanged": 199
+  }
+ },
+ "dbinfo_corrupt": {
+  "records": 9,
+  "loaded": [
+   "00f6c6a4-70b3-4b41-8cda-33a3d114fb74"
+  ],
+  "rejected_reasons": [
+   "missing_log_id",
+   "invalid_log_id",
+   "invalid_log_date",
+   "missing_log_date",
+   "invalid_type_duration_s",
+   "invalid_flight_mode_durations",
+   "not_an_object",
+   "duplicate_log_id_in_snapshot"
+  ]
+ },
+ "dbinfo_truncated": {
+  "must_fail": true
+ },
+ "ulog": {
+  "14900471-eec2-4e0b-868d-365be641867a.ulg": {
+   "index_row_in_sample": true,
+   "mav_type": "Tiltrotor VTOL",
+   "bytes": 1432645
+  },
+  "2cfe9a4c-fae0-4764-bc10-1688ed4607de.ulg": {
+   "index_row_in_sample": true,
+   "mav_type": "Quadrotor",
+   "bytes": 814634
+  },
+  "786d35c7-8d81-4903-816e-491760285a0c.ulg": {
+   "index_row_in_sample": true,
+   "mav_type": "Fixed Wing",
+   "bytes": 1779641
+  },
+  "truncated.ulg": {
+   "must_reject": true,
+   "reason": "size_mismatch",
+   "expected_bytes": 814634,
+   "actual_bytes": 100000
+  },
+  "not_a_ulog.ulg": {
+   "must_reject": true,
+   "reason": "invalid_ulog_header"
+  }
+ }
+}

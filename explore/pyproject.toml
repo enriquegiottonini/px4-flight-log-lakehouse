@@ -1,0 +1,11 @@
+[project]
+name = "px4-explore"
+version = "0.1.0"
+description = "Phase 1: profile the PX4 Flight Review API and build test fixtures"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "pyulog==1.2.4",
+]
+
+[tool.uv]
+package = false

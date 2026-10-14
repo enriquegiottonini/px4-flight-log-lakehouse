@@ -1,0 +1,297 @@
+[
+ {
+  "log_id": "00f6c6a4-70b3-4b41-8cda-33a3d114fb74",
+  "log_date": "2026-10-13",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg"
+ },
+ {
+  "log_date": "2026-10-13",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "missing_log_id"
+ },
+ {
+  "log_id": "not-a-uuid",
+  "log_date": "2026-10-13",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "invalid_log_id"
+ },
+ {
+  "log_id": "00000000-0000-4000-8000-000000000003",
+  "log_date": "2026-13-45",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "invalid_log_date"
+ },
+ {
+  "log_id": "00000000-0000-4000-8000-000000000004",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "missing_log_date"
+ },
+ {
+  "log_id": "00000000-0000-4000-8000-000000000005",
+  "log_date": "2026-10-13",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": "81",
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "invalid_type_duration_s"
+ },
+ {
+  "log_id": "00000000-0000-4000-8000-000000000006",
+  "log_date": "2026-10-13",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    2
+   ],
+   [
+    3,
+    "x"
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "invalid_flight_mode_durations"
+ },
+ [
+  "this",
+  "is",
+  "not",
+  "a",
+  "record"
+ ],
+ {
+  "log_id": "00f6c6a4-70b3-4b41-8cda-33a3d114fb74",
+  "log_date": "2026-10-13",
+  "description": "",
+  "feedback": "",
+  "type": "flightreport",
+  "wind_speed": -1,
+  "rating": "",
+  "video_url": "",
+  "error_labels": [],
+  "source": "webui",
+  "duration_s": 326,
+  "mav_type": "Hexarotor",
+  "estimator": "EKF2",
+  "sys_autostart_id": 6001,
+  "sys_hw": "PX4_FMU_V6XRT",
+  "ver_sw": "6ba22db37d6a962795a34b8fbe9cf45fe372ad44",
+  "ver_sw_release": "v1.16.1 255",
+  "num_logged_errors": 0,
+  "num_logged_warnings": 10,
+  "flight_modes": [
+   1
+  ],
+  "vehicle_uuid": "0009000000000000000082929744051ba80e",
+  "flight_mode_durations": [
+   [
+    1,
+    326
+   ]
+  ],
+  "vehicle_name": "",
+  "airframe_name": "Generic Hexarotor x geometry",
+  "airframe_type": "Hexarotor x",
+  "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
+  "_expect_reason": "duplicate_log_id_in_snapshot"
+ }
+]

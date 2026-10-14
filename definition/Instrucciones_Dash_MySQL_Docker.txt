@@ -1,0 +1,365 @@
+INSTRUCCIONES COMPLETAS: DASH PYTHON + MYSQL EN DOCKER
+================================================================
+
+Puedes usar el proyecto dash-mysql.zip o crear los archivos manualmente con los contenidos del anexo de esta guía.
+
+Todos los comandos docker compose se ejecutan desde la carpeta
+dash-mysql, donde se encuentra compose.yaml.
+
+Dash + MySQL con Docker
+
+Ejemplo local con dos contenedores y datos agrícolas ficticios.
+Requiere Docker Engine con Compose v2 o Docker Desktop iniciado
+(en Windows, modo de contenedores Linux).
+
+1. Preparación
+
+Extrae el ZIP y abre una terminal en la carpeta dash-mysql, donde está compose.yaml.
+
+Comprueba:
+
+docker --version
+docker compose version
+
+Crea .env a partir de .env.example:
+
+Windows PowerShell:
+
+Copy-Item .env.example .env
+
+Linux / macOS:
+
+cp .env.example .env
+
+El archivo contiene claves para la demostración local. Puedes editarlas antes
+del primer inicio. No publiques .env. Dash usa dash_user, no root.
+
+2. Descargar imágenes y arrancar
+
+docker pull mysql:8.4
+docker pull python:3.12-slim
+docker compose up -d --build
+docker compose ps
+
+Compose construye la imagen dash-agricultura:local instalando las librerías de
+requirements.txt sobre Python. Los pull son explícitos para fines didácticos:
+Compose también puede descargar las imágenes necesarias al construir/arrancar.
+La primera ejecución necesita Internet y puede tardar unos minutos.
+
+Abre http://localhost:8050
+
+El desplegable permite elegir temperatura, humedad, radiación o precipitación.
+La aplicación consulta MySQL cada 10 segundos. No genera nuevas mediciones;
+para observar cambios debes insertar datos.
+
+3. Insertar una medición y comprobar el cambio
+
+docker compose exec mysql mysql -u dash_user -p agricultura
+
+Introduce el valor MYSQL_PASSWORD de .env (por defecto DashDemo2026_local).
+En la consola MySQL:
+
+SELECT * FROM mediciones ORDER BY fecha DESC;
+
+INSERT INTO mediciones
+(fecha,tempMin,tempMax,tempAvg,humRelMin,humRelMax,humRelAvg,radSol,prec)
+VALUES (NOW(),26,33,29.5,40,65,52.5,420,2);
+
+exit;
+
+El dashboard mostrará el registro en la siguiente consulta.
+
+4. Comandos útiles
+
+docker compose logs -f dash
+docker compose logs -f mysql
+docker compose exec dash sh
+docker compose stop
+docker compose start
+docker compose down
+docker compose up -d
+
+Ctrl+C termina la visualización de logs sin detener los servicios.
+stop detiene; start reanuda; down elimina contenedores/red, pero conserva
+el volumen de datos. No uses down -v si quieres conservar la base:
+la opción -v elimina también sus datos.
+
+Para editar app.py usa un editor en tu computadora y después:
+
+docker compose up -d --build dash
+
+5. Conexión y persistencia
+
+Desde Dash: host=mysql, puerto=3306, base=agricultura, usuario=dash_user.
+localhost desde Dash apuntaría al propio contenedor Dash.
+Compose crea una red compartida y resuelve el nombre del servicio mysql.
+Solo se publica Dash, en 127.0.0.1:8050; MySQL queda accesible en la red interna.
+
+Para usar MySQL Workbench desde tu computadora, agrega al servicio mysql:
+
+    ports:
+      - "127.0.0.1:3307:3306"
+
+Reaplica con docker compose up -d. En Workbench usa 127.0.0.1, puerto 3307,
+dash_user y la contraseña de .env. Dash sigue usando mysql:3306.
+
+Los datos se guardan en el volumen mysql_data (con prefijo del proyecto).
+mysql/01-init.sql solo se ejecuta cuando el directorio de datos está vacío.
+Editar el SQL o las claves de .env después del primer inicio no modifica la
+base ni las contraseñas ya creadas: aplica cambios mediante SQL.
+
+La comprobación de salud exige una consulta real a mediciones antes de
+arrancar Dash. El dashboard vuelve a intentar la consulta si MySQL falla.
+Se muestran como máximo las últimas 1000 mediciones, ordenadas por fecha.
+Las fechas del ejemplo usan el reloj del contenedor; no se configuran zonas
+horarias ni conversiones. Dependencias limitadas por versión mayor, sin
+bloqueo exacto de versiones: dos builds futuros pueden resolver parches distintos.
+
+6. Problemas frecuentes
+
+- Puerto 8050 ocupado: cambia el mapeo a 127.0.0.1:8051:8050 y abre localhost:8051.
+- Error de conexión a Docker: inicia Docker Desktop o el servicio Docker.
+- Error al descargar: comprueba acceso a Docker Hub/PyPI, DNS, proxy y firewall.
+- MySQL unhealthy: consulta docker compose logs mysql. En equipos lentos puede
+  ser necesario aumentar retries. Si falla el primer up, corrige el problema
+  y ejecuta nuevamente docker compose up -d.
+- Access denied tras editar .env: el volumen conserva las claves originales.
+
+
+Documentación
+
+- https://docs.docker.com/compose/how-tos/networking/
+- https://docs.docker.com/compose/how-tos/startup-order/
+- https://hub.docker.com/_/mysql
+- https://dash.plotly.com/
+
+
+ANEXO: ARCHIVOS COMPLETOS DEL PROYECTO
+================================================================
+
+Para reconstruir el proyecto sin el ZIP:
+1. Ejecuta: mkdir dash-mysql
+2. Ejecuta: cd dash-mysql
+3. Ejecuta: mkdir mysql
+4. Crea los archivos siguientes con un editor de texto.
+5. Guarda el texto en UTF-8 y conserva los nombres exactos.
+   Dockerfile no lleva extensión; evita nombres como compose.yaml.txt.
+6. Copia solamente el contenido entre las marcas INICIO y FIN.
+7. Vuelve al paso de preparación y crea .env antes de iniciar.
+
+
+================================================================
+ARCHIVO: compose.yaml
+================================================================
+INICIO DEL CONTENIDO
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Define MYSQL_ROOT_PASSWORD en .env}
+      MYSQL_DATABASE: agricultura
+      MYSQL_USER: dash_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Define MYSQL_PASSWORD en .env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u \"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1 FROM mediciones LIMIT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  dash:
+    build: .
+    image: dash-agricultura:local
+    ports:
+      - "127.0.0.1:8050:8050"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: agricultura
+      DB_USER: dash_user
+      DB_PASSWORD: ${MYSQL_PASSWORD:?Define MYSQL_PASSWORD en .env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+FIN DEL CONTENIDO
+
+================================================================
+ARCHIVO: Dockerfile
+================================================================
+INICIO DEL CONTENIDO
+FROM python:3.12-slim
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+EXPOSE 8050
+CMD ["gunicorn", "--bind", "0.0.0.0:8050", "--workers", "2", "--timeout", "60", "app:server"]
+FIN DEL CONTENIDO
+
+================================================================
+ARCHIVO: requirements.txt
+================================================================
+INICIO DEL CONTENIDO
+dash>=3.0,<4
+plotly>=6,<7
+pandas>=2.2,<3
+mysql-connector-python>=9,<10
+gunicorn>=23,<24
+FIN DEL CONTENIDO
+
+================================================================
+ARCHIVO: .env.example
+================================================================
+INICIO DEL CONTENIDO
+# Claves de demostracion local; puedes cambiarlas ANTES del primer inicio.
+MYSQL_ROOT_PASSWORD=RootDemo2026_local
+MYSQL_PASSWORD=DashDemo2026_local
+FIN DEL CONTENIDO
+
+================================================================
+ARCHIVO: .dockerignore
+================================================================
+INICIO DEL CONTENIDO
+.env
+.env.*
+mysql/
+__pycache__/
+README.md
+FIN DEL CONTENIDO
+
+================================================================
+ARCHIVO: mysql/01-init.sql
+================================================================
+INICIO DEL CONTENIDO
+USE agricultura;
+CREATE TABLE mediciones (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    fecha DATETIME NOT NULL,
+    tempMin DOUBLE NOT NULL,
+    tempMax DOUBLE NOT NULL,
+    tempAvg DOUBLE NOT NULL,
+    humRelMin DOUBLE NOT NULL,
+    humRelMax DOUBLE NOT NULL,
+    humRelAvg DOUBLE NOT NULL,
+    radSol DOUBLE NOT NULL COMMENT 'Radiacion solar media del periodo, W/m2',
+    prec DOUBLE NOT NULL COMMENT 'Precipitacion acumulada del periodo, mm',
+    INDEX idx_fecha (fecha)
+);
+
+-- Datos ficticios: resumen por hora.
+INSERT INTO mediciones
+(fecha,tempMin,tempMax,tempAvg,humRelMin,humRelMax,humRelAvg,radSol,prec)
+VALUES
+(NOW() - INTERVAL 5 HOUR,21,25,23,45,60,52,100,0),
+(NOW() - INTERVAL 4 HOUR,23,28,25.5,40,55,47,250,0),
+(NOW() - INTERVAL 3 HOUR,26,31,28.5,35,49,42,450,0),
+(NOW() - INTERVAL 2 HOUR,28,34,31,30,44,37,650,0),
+(NOW() - INTERVAL 1 HOUR,27,32,29.5,40,58,49,350,1.5),
+(NOW(),25,29,27,55,72,63,150,3);
+FIN DEL CONTENIDO
+
+================================================================
+ARCHIVO: app.py
+================================================================
+INICIO DEL CONTENIDO
+import logging
+import os
+from datetime import datetime
+
+import mysql.connector
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from dash import Dash, Input, Output, dcc, html
+
+app = Dash(__name__)
+server = app.server
+app.title = "Dashboard agrícola"
+
+VARIABLES = {
+    "temperatura": (["tempMin", "tempMax", "tempAvg"], "Temperatura", "°C"),
+    "humedad": (["humRelMin", "humRelMax", "humRelAvg"], "Humedad relativa", "%"),
+    "radiacion": (["radSol"], "Radiación solar media del periodo", "W/m²"),
+    "precipitacion": (["prec"], "Precipitación acumulada del periodo", "mm"),
+}
+
+app.layout = html.Div([
+    html.H1("Monitoreo del campo experimental"),
+    html.P("Dash + MySQL · Datos iniciales simulados · Consulta cada 10 segundos"),
+    dcc.Dropdown(
+        id="variable",
+        options=[{"label": v[1], "value": k} for k, v in VARIABLES.items()],
+        value="temperatura",
+        clearable=False,
+    ),
+    dcc.Graph(id="grafica"),
+    html.P(id="estado"),
+    dcc.Interval(id="reloj", interval=10_000, n_intervals=0),
+], style={"maxWidth": "1100px", "margin": "40px auto", "padding": "20px",
+          "fontFamily": "Arial, sans-serif"})
+
+
+def leer_datos():
+    conexion = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        port=int(os.environ.get("DB_PORT", "3306")),
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        database=os.environ["DB_NAME"],
+        connection_timeout=5,
+    )
+    try:
+        with conexion.cursor(dictionary=True) as cursor:
+            cursor.execute("""
+                SELECT id,fecha,tempMin,tempMax,tempAvg,
+                       humRelMin,humRelMax,humRelAvg,radSol,prec
+                FROM mediciones ORDER BY fecha DESC,id DESC LIMIT 1000
+            """)
+            registros = cursor.fetchall()
+    finally:
+        conexion.close()
+    if not registros:
+        return pd.DataFrame()
+    return pd.DataFrame(registros).sort_values(["fecha", "id"])
+
+
+@app.callback(
+    Output("grafica", "figure"), Output("estado", "children"),
+    Input("variable", "value"), Input("reloj", "n_intervals"),
+)
+def actualizar(variable, _):
+    try:
+        datos = leer_datos()
+    except mysql.connector.Error:
+        logging.exception("No se pudo consultar MySQL")
+        fig = go.Figure()
+        fig.add_annotation(text="No se pudo consultar MySQL. Se reintentará automáticamente.",
+                           showarrow=False)
+        return fig, "Conexión no disponible; revisa docker compose logs."
+    if datos.empty:
+        return go.Figure(), "La tabla todavía no tiene mediciones."
+    columnas, titulo, unidad = VARIABLES[variable]
+    if variable == "precipitacion":
+        fig = px.bar(datos, x="fecha", y=columnas[0], title=titulo)
+    else:
+        fig = px.line(datos, x="fecha", y=columnas, markers=True, title=titulo)
+    fig.update_layout(template="plotly_white", xaxis_title="Fecha",
+                      yaxis_title=unidad, legend_title_text="Serie")
+    return fig, (
+        f"Última consulta: {datetime.now():%Y-%m-%d %H:%M:%S} (hora del contenedor). "
+        f"Registros mostrados: {len(datos)} (máximo 1000)."
+    )
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8050, debug=False)
+FIN DEL CONTENIDO

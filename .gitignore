@@ -1,0 +1,13 @@
+# secrets
+.env
+
+# local data (re-downloadable)
+explore/data/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# os
+.DS_Store

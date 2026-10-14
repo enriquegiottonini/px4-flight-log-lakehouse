@@ -1,0 +1,5 @@
+dash>=3.0,<4
+plotly>=6,<7
+pandas>=2.2,<3
+mysql-connector-python>=9,<10
+gunicorn>=23,<24
