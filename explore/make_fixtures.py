@@ -83,7 +83,7 @@ def corrupt_records(base: dict) -> list[dict]:
     out.append(variant("invalid_log_date", log_date="2026-13-45"))
     out.append(variant("missing_log_date"))
     del out[-1]["log_date"]
-    out.append(variant("invalid_type_duration_s", duration_s="81"))
+    out.append(variant("invalid_duration_s", duration_s="81"))
     out.append(variant("invalid_flight_mode_durations", flight_mode_durations=[[2], [3, "x"]]))
     out.append(variant("not_an_object"))
     out[-1] = ["this", "is", "not", "a", "record"]

@@ -50,7 +50,7 @@
    "invalid_log_id",
    "invalid_log_date",
    "missing_log_date",
-   "invalid_type_duration_s",
+   "invalid_duration_s",
    "invalid_flight_mode_durations",
    "not_an_object",
    "duplicate_log_id_in_snapshot"

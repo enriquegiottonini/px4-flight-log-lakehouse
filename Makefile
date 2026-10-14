@@ -7,7 +7,7 @@ INIT_JOBS := rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps logs config psql s3 trino
+.PHONY: help env up down reset ps logs config psql s3 trino test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-8s %s\n", $$1, $$2}'
@@ -47,3 +47,6 @@ s3:  ## Run an AWS CLI s3 command against RustFS: make s3 ARGS="ls s3://landing"
 trino:  ## Trino SQL shell on the iceberg catalog, or run one statement: make trino SQL="show schemas"
 	@if [ -n "$(SQL)" ]; then $(COMPOSE) exec trino trino --catalog iceberg --execute "$(SQL)"; \
 	else $(COMPOSE) exec trino trino --catalog iceberg; fi
+
+test:  ## Unit tests of the ingestion package (fixtures only: no network, no services)
+	cd ingest && uv run pytest -q

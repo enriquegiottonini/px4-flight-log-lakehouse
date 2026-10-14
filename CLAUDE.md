@@ -129,17 +129,17 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 2. **Landing keeps the raw gz** for audit, but only the last `INDEX_SNAPSHOT_RETENTION=7` snapshots (~225 MB).
 3. **Bronze is append-only and stores only changes**: compute `payload_hash = sha256(canonical JSON)` per record and anti-join against bronze's latest hash per `log_id`. Insert rows that are **new** (`_change_type='insert'`) or **changed** (`_change_type='update'`). Bronze grows by ~500 rows/day instead of 476k, and keeps each log's metadata history.
 4. **First run (bootstrap)** inserts only records with `log_date >= INDEX_START_DATE` (default `2025-01-01`, ~200k rows, a few seconds). Widening the window later just re-diffs.
-5. **ULogs** are fetched once per `log_id` (anti-join with `audit.ulog_downloads`). Their window is `ULOG_START_DATE` (default today − 1, see D-004), which is independent of the index window. Because `log_date` is the upload date, new `log_id`s always appear under recent dates.
+5. **ULogs** are fetched once per `log_id` (anti-join with `audit.ulog_downloads`). Their window is **one full UTC day of uploads, `[ULOG_START_DATE, ULOG_END_DATE)`**, default `[today − 1, today)` (D-004). It's independent of the index window. Because `log_date` is the upload date, new `log_id`s always appear under recent dates.
 
 **Disk budget (D-004), measured in Phase 1** (`explore/reports/ulog_sizes.md`): ~512 logs/day × **18 MB mean** ≈ **9.3 GB/day** of raw ULog.
 - A 7-day window would be ≈ 65 GB, but the development machine has ~13 GiB free. **Decision (D-004, revised): keep raw ULogs for a 1-day window only.**
-- `ULOG_START_DATE` = today − 1 and `ULOG_RETENTION_DAYS=1`: landing holds at most one day of `.ulg` files (~9–10 GB).
+- Window `[today − 1, today)` and `ULOG_RETENTION_DAYS=1`: landing holds at most one day of `.ulg` files (~9–10 GB). With `log_date >= today − 1`, today's partial uploads would also be fetched, so ~1.4 days would coexist.
 - **Purge before fetch:** `purge_expired_ulogs` runs *before* the day's downloads, so two days never coexist (that would be ~18 GB).
 - **Free-disk guard:** before each batch, `fetch-ulogs` checks free space on the RustFS volume. It aborts with a clear error if free space minus the batch's summed `Content-Length` would drop below `MIN_FREE_DISK_GB=3`.
 - **Backfill** processes one day at a time and purges between days, so the peak never exceeds one day.
 - Parsed telemetry lives in Iceberg and is **not** purged: ~40–90 rows per log at 1 Hz ≈ 40k rows/day, so telemetry history keeps growing even though raw files rotate.
 - Docker Desktop keeps volumes inside its VM disk image (Settings → Resources → disk limit). It must allow ≥ 20 GB.
-- Knobs: `ULOG_START_DATE`, `ULOG_RETENTION_DAYS`, `MIN_FREE_DISK_GB`, `ULOG_MAX_BYTES` (larger logs → `rejected`, reason `too_large`), `MAX_ULOGS_PER_RUN` (empty = all; useful during development).
+- Knobs: `ULOG_START_DATE`, `ULOG_END_DATE`, `ULOG_RETENTION_DAYS`, `MIN_FREE_DISK_GB`, `ULOG_MAX_BYTES` (larger logs → `rejected`, reason `too_large`), `MAX_ULOGS_PER_RUN` (empty = all; useful during development).
 
 ## 5. Architecture and services
 
@@ -230,10 +230,15 @@ Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astro
 - `bronze.logs_index_raw`: `log_id`, `log_date`, `payload` (JSON string), `payload_hash`, `_change_type` (insert/update), `_snapshot_etag`, `_run_id`, `_source_file`, `_ingested_at`. Append-only (only new or changed records), partitioned by `month(log_date)`. Re-running the same snapshot inserts 0 rows because the hashes already match.
 - `bronze.telemetry_raw`: `log_id`, `t_boot_s`, `ts_utc` (nullable: needs a GPS fix), `lat`, `lon`, `alt_m`, `vx`, `vy`, `vz`, `battery_remaining`, `battery_voltage_v`, `battery_current_a`, `nav_state`, `arming_state`, plus metadata. Partitioned by `_log_date` (the upload date, always present). Built from `vehicle_global_position`, `vehicle_local_position`, `battery_status` and `vehicle_status`, averaged per second.
 - `bronze.log_messages_raw`: `log_id`, `ts`, `level`, `message`.
-- `bronze.rejected_records`: `entity`, `log_id`, `reason`, `raw`, `_run_id`.
-- `audit.index_snapshots`: `etag`, `last_modified`, `bytes`, `records`, `inserted`, `updated`, `run_id`, `fetched_at`. The latest row supplies `If-None-Match`.
+- `bronze.rejected_records`: `entity`, `log_id`, `reason` (`missing_<field>` / `invalid_<field>` / `not_an_object` / `duplicate_log_id_in_snapshot`), `detail`, `raw`, `_run_id`, `_rejected_at`.
+- `audit.index_snapshots`: `etag`, `last_modified`, `bytes`, `records`, `sha256`, `landing_key`, `run_id`, `fetched_at`.
+- `If-None-Match` uses the ETag of the newest snapshot that was **successfully loaded** (from `audit.ingestion_runs`), not just downloaded. A run that downloaded but failed to load is therefore retried next time.
 - `audit.ingestion_runs`: entity, date, run_id, read, loaded, rejected, bytes, duration.
-- `audit.ulog_downloads`: `log_id`, `status`, `bytes`, `sha256`, `downloaded_at`, `parsed_at`.
+- `audit.ulog_downloads`: append-only event log (`log_id`, `log_date`, `status`, `reason`, `bytes`, `sha256`, `landing_key`, `telemetry_rows`, `message_rows`, `run_id`, `event_at`). A log's current status is its latest event:
+  - `downloaded`: landed, needs parsing.
+  - `parsed`: terminal.
+  - `rejected`: terminal (`not_found`, `too_large`, `invalid_ulog_header`, `parse_error`).
+  - `failed`: retried next run (`size_mismatch`).
 
 **Silver (dbt):**
 - `stg_logs`: dedups by `log_id`, keeping the latest `_ingested_at`. Renames `log_date` → `uploaded_date`, adds `is_simulation` (SITL), and nulls `duration_s` outside 1–86,400 s. Casts types and converts empty strings and sentinels to nulls. Splits `airframe_type` into `airframe_type` / `sys_autostart_fallback`. Normalizes `rating` via the `rating_map` seed. Parses `ver_sw_release` into `fw_major_minor`. Groups `mav_type` into `vehicle_class` (multirotor, fixed_wing, vtol, rover, other).
@@ -374,28 +379,63 @@ open http://localhost:8085/ui/                     # Trino query UI (any user na
 
 ### Phase 4: Ingestion (`drone_ingest`)
 **Introduces:** ELT, an immutable landing zone, manifests, idempotency, PyIceberg `RestCatalog` against Lakekeeper (same warehouse `px4` as Trino), ULog parsing.
-- CLI:
-  - `drone-ingest snapshot-index --run-id`: conditional GET of `dbinfo` (`If-None-Match` with the last ETag) with retries (section 3.4). On 304, exits with "no changes" and Airflow skips the downstream tasks. On 200, writes the gz + `_manifest.json` (etag, bytes, records, sha256) to landing and prunes snapshots beyond `INDEX_SNAPSHOT_RETENTION`.
-  - `drone-ingest load-index --run-id`: computes `payload_hash` per record, anti-joins against bronze's latest hash per `log_id`, and appends only new or changed rows (bootstrap limited to `log_date >= INDEX_START_DATE`). Invalid records go to `rejected_records`.
-  - `drone-ingest plan-ulogs --run-id`: window `log_id`s without `status='parsed'` in `audit.ulog_downloads` → a list in batches of 50.
-  - `drone-ingest fetch-ulogs --batch <file>`: streaming download with concurrency 4. Rejects as `size_mismatch` when the downloaded bytes ≠ `Content-Length` (pyulog can't detect truncation), and records the sha256.
-  - `drone-ingest parse-ulogs --batch <file>`: pyulog → 1 Hz → `bronze.telemetry_raw` + `bronze.log_messages_raw`. A corrupt log is rejected without stopping the batch.
-- [ ] `pytest` green against the fixtures (no network).
-- [ ] Loading the same snapshot twice inserts 0 rows the second time.
-- [ ] A fixture with one edited `rating` produces exactly one `_change_type='update'` row.
-- [ ] A second `snapshot-index` the same day receives 304 and downloads 0 bytes.
-- [ ] Running `fetch-ulogs` twice doesn't download again.
-- [ ] With `MIN_FREE_DISK_GB` set above the real free space, `fetch-ulogs` aborts before downloading anything.
-- [ ] Trino sees the tables PyIceberg wrote. **This is the first risk to validate.**
+
+Package `ingest/src/drone_ingest/`:
+- `config.py`: settings from env vars. On the host, the repo-root `.env` is loaded and localhost ports are used; in containers, set `S3_ENDPOINT` / `CATALOG_URI`.
+- `http.py`: polite client following PX4's retry rules (section 3.4).
+- `storage.py`: boto3 for landing.
+- `catalog.py`: the 7 table definitions and an `append` that retries on `CommitFailedException`, because Phase 5's parallel tasks will race.
+- `schemas.py`: pydantic contract for index records.
+- `index.py`, `ulog.py`: the commands below. Pure functions (diff, parse, checks) are kept separate from I/O so they're unit-testable.
+- `audit.py`, `cli.py`.
+
+CLI commands (each prints a JSON summary on stdout; logs go to stderr with `run_id=` / `cmd=`):
+- `drone-ingest init-tables`: creates the missing bronze/audit tables (every command does this too).
+- `drone-ingest snapshot-index`: conditional GET (section 3.4 retries). On 304 it records `not_modified` and stops. On 200 it checks the gzip/JSON, lands `dbinfo.json.gz`, then `_manifest.json` last (etag, bytes, records, sha256), and prunes snapshots beyond `INDEX_SNAPSHOT_RETENTION`.
+- `drone-ingest load-index [--manifest KEY]`: verifies sha256 against the manifest, validates records, diffs them against bronze's latest hash per `log_id`, and appends only `insert`/`update` rows. Rejects go to `bronze.rejected_records`.
+- `drone-ingest plan-ulogs [--start --end] --out plan.json`: log ids uploaded in the window that are not yet `parsed`/`rejected`, in batches of `ULOG_BATCH_SIZE`.
+- `drone-ingest fetch-ulogs --plan plan.json [--batch N]`: HEADs every file (404 → `not_found`, > `ULOG_MAX_BYTES` → `too_large`), runs the disk guard over the batch, then downloads with concurrency `ULOG_CONCURRENCY`. A size ≠ `Content-Length` is retried once, then marked `failed`. Files land at `px4/ulog/log_date=…/<id>.ulg`.
+- `drone-ingest parse-ulogs --plan plan.json [--batch N]`: pyulog → 1 Hz telemetry (means; last value for states) plus logged messages, with UTC from GPS `time_utc_usec` when there's a fix. One append per table per batch; a broken file is rejected without stopping the batch.
+- `drone-ingest purge-ulogs`: deletes landed `log_date=` folders older than today − `ULOG_RETENTION_DAYS`. Run it **before** fetching.
+
+Checklist:
+- [x] `pytest` green against the fixtures (no network, no services): 20 tests, `make test`.
+- [x] **Trino sees the tables PyIceberg wrote** (first risk): all 7 tables, with `month(log_date)` partitioning and ZSTD.
+- [x] Bootstrap on the real index: 477,079 read, 314,800 inserted (`log_date >= 2025-01-01`), 162,279 out of window, 0 rejected, in 12 s.
+- [x] Loading the same snapshot twice inserts 0 rows the second time (314,800 unchanged).
+- [x] A fixture with one edited `rating` produces exactly one `_change_type='update'` row (unit test with the next-day snapshot: 5 inserts, 1 update, 199 unchanged).
+- [x] A second `snapshot-index` the same day receives 304 and downloads 0 bytes (`not_modified` in `audit.ingestion_runs`).
+- [x] With `MIN_FREE_DISK_GB` above the real free space, `fetch-ulogs` exits 1 with `DiskGuardError` before downloading anything (0 files, 0 audit events).
+- [x] 20 real ULogs (368 MB): fetched in 14 s, and fetching again skips all 20. Parsed in 5 s: 3,035 telemetry rows and 10,922 messages; parsing again → 0.
+- [x] Corrupt fixture records land in `bronze.rejected_records` with all 8 reasons, read back in Trino (test rows then removed with Trino `DELETE`).
+- [x] `purge-ulogs` deletes only folders older than the cutoff.
+- Footprint:
+  - `load-index` peaks at **~2.6 GB of RAM** on the bootstrap and ~2 GB on a daily run, because the whole 477k-record index is parsed into Python objects. Size the Airflow container accordingly in Phase 5, or switch to a streaming JSON parser.
+  - `parse-ulogs` stays at ~240 MB per batch of 20.
+
+Findings and gotchas:
+- PyIceberg 0.12 needs the **`pyiceberg-core`** extra to write `month()`-partitioned tables (`NotInstalledError` otherwise).
+- PyIceberg asks Lakekeeper for **vended credentials** by default, so writes use STS keys and the `rustfs.localhost` endpoint. macOS resolves `*.localhost` to 127.0.0.1, and containers resolve the compose alias.
+- Fetch must use the **current** status from `audit.ulog_downloads`, not the status saved in the plan file. A stale plan once produced 20 redundant audit events; those rows are still in the dev data.
+- One real log produced **10,624 ERROR messages**, mostly unique strings (embedded numbers), so silver/gold must normalize messages into templates before counting "top messages".
+- Of the 20 logs uploaded on 2026-10-13, flight dates (GPS UTC) go back to 2025-05-08: `log_date` really is the upload date.
+- ~59 % of telemetry rows have `ts_utc` (logs without a GPS fix have only `t_boot_s`).
+
 ```bash
-cd ingest && uv sync && uv run pytest -q
-uv run drone-ingest snapshot-index --run-id manual_1
-uv run drone-ingest load-index --run-id manual_1
-uv run drone-ingest snapshot-index --run-id manual_2      # same day → 304, nothing downloaded
-curl -sSI https://cdn.logs.px4.io/dbinfo.json | grep -iE 'etag|last-modified'
-docker compose exec trino trino --execute "select log_date, count(*) from iceberg.bronze.logs_index_raw group by 1 order by 1 desc limit 10"
-uv run python -c "from pyiceberg.catalog.rest import RestCatalog; …; print(cat.load_table('bronze.logs_index_raw').scan().to_arrow().num_rows)"
-# Lakekeeper UI: the new table and one snapshot per load-index run
+make test                                   # unit tests
+cd ingest && uv sync
+uv run drone-ingest snapshot-index          # 200 + landed, or 304 if already loaded
+uv run drone-ingest load-index              # diff vs bronze → inserted / updated / unchanged
+uv run drone-ingest snapshot-index          # again: 304, 0 bytes
+MAX_ULOGS_PER_RUN=20 uv run drone-ingest plan-ulogs --out plan.json   # yesterday's uploads, capped
+uv run drone-ingest fetch-ulogs --plan plan.json
+uv run drone-ingest parse-ulogs --plan plan.json
+uv run drone-ingest purge-ulogs
+MIN_FREE_DISK_GB=100000 uv run drone-ingest fetch-ulogs --plan plan.json   # disk guard: aborts, exit 1
+make trino SQL="SELECT entity, run_id, status, read, inserted, updated, rejected FROM audit.ingestion_runs ORDER BY started_at"
+make trino SQL="SELECT count(DISTINCT log_id), count(*), count(ts_utc) FROM bronze.telemetry_raw"
+make s3 ARGS="ls --recursive s3://landing/px4/"
+# Lakekeeper UI → px4 › bronze › telemetry_raw › PREVIEW (DuckDB in the browser)
 ```
 
 ### Phase 5: Orchestration with Airflow 3
@@ -482,7 +522,7 @@ docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a 
 │   ├── charts/Dockerfile
 │   └── scripts/{wait-init.sh,smoke_test.sh}
 ├── explore/                     # Phase 1 profiling scripts and reports
-├── ingest/                      # drone_ingest package (pyproject, src/, tests/fixtures/)
+├── ingest/                      # drone_ingest package: src/drone_ingest/{config,http,storage,catalog,schemas,index,ulog,audit,cli}.py, tests/
 ├── dags/                        # Airflow DAGs (mounted into the Airflow containers)
 └── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/
 ```
@@ -491,7 +531,7 @@ Rule: files that configure, build or run services go in `infrastructure/`. Code 
 
 ## 9. Watched risks
 
-- **Lakekeeper is 0.x**: pinned to `v0.14.0` (released 2026-10-07), with `v0.13.6` as the fallback. Trino 483 ↔ Lakekeeper is verified (Phase 3). PyIceberg 0.12 writing tables that Trino reads is still to verify at the start of Phase 4.
+- **Lakekeeper is 0.x**: pinned to `v0.14.0` (released 2026-10-07), with `v0.13.6` as the fallback. Trino 483 ↔ Lakekeeper is verified (Phase 3). PyIceberg 0.12 writing tables that Trino reads is verified (Phase 4).
 - **RustFS + Lakekeeper STS**: verified (Phase 3). The browser path depends on `*.localhost` resolving to 127.0.0.1, which Chrome and Firefox do. Other browsers may need a `/etc/hosts` entry `127.0.0.1 rustfs.localhost`.
 - **Disk usage from full ULog**: ~9.3 GB/day against ~13 GiB free. Mitigated by the 1-day raw window, purge-before-fetch and the `MIN_FREE_DISK_GB` guard (D-004). Free up disk if a heavy upload day gets close to the limit.
 - **RustFS 1.0.x and dbt Charts 0.9.x are young**: versions pinned; standard S3 API only.

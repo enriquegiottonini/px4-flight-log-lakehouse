@@ -4,6 +4,9 @@
 # local data (re-downloadable)
 explore/data/
 
+# drone-ingest plan files (`plan-ulogs --out`)
+plan.json
+
 # python
 .venv/
 __pycache__/

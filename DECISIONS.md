@@ -30,7 +30,7 @@ One entry per decision. Format: context → decision → consequences. Newer dec
 - **Context:** telemetry (position, altitude, speed, battery) and logged messages exist only inside ULog files.
   - The Phase 1 measurement (200 HEAD requests) found a mean of **18 MB**, not 8 MB, and ~512 logs/day ≈ **9.3 GB/day**.
   - The development machine has ~13 GiB free.
-- **Decision:** download and parse (with `pyulog`) every ULog uploaded in the last day (`ULOG_START_DATE` = today − 1). Downsample to 1 Hz and extract `logged_messages` as events. Keep raw `.ulg` files for **1 day** (`ULOG_RETENTION_DAYS=1`).
+- **Decision:** download and parse (with `pyulog`) every ULog uploaded during **one full UTC day**, the window `[ULOG_START_DATE, ULOG_END_DATE)` = `[today − 1, today)`. `log_date` is the upload date, so yesterday is complete once the day ends. Downsample to 1 Hz and extract `logged_messages` as events. Keep raw `.ulg` files for **1 day** (`ULOG_RETENTION_DAYS=1`).
 - **Consequences:**
   - Landing holds at most ~9–10 GB of raw ULog.
   - `purge_expired_ulogs` runs before each day's downloads, so two days never coexist.

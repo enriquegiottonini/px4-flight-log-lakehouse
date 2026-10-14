@@ -210,7 +210,7 @@
   "airframe_name": "Generic Hexarotor x geometry",
   "airframe_type": "Hexarotor x",
   "download_url": "https://cdn.logs.px4.io/00f6c6a4-70b3-4b41-8cda-33a3d114fb74.ulg",
-  "_expect_reason": "invalid_type_duration_s"
+  "_expect_reason": "invalid_duration_s"
  },
  {
   "log_id": "00000000-0000-4000-8000-000000000006",
