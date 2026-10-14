@@ -1,7 +1,9 @@
 """Iceberg tables written by the ingestion (bronze + audit), through Lakekeeper's REST catalog.
 
-PyIceberg asks Lakekeeper for vended credentials by default, so writes use short-lived STS keys
-and the warehouse endpoint (http://rustfs.localhost:9000). The static keys below are a fallback.
+Data files are read/written with OUR S3 endpoint and keys (like Trino), not the warehouse's:
+Lakekeeper returns its endpoint http://rustfs.localhost:9000 (meant for browsers) in every table
+response, and pyarrow's S3 client (curl) resolves any *.localhost to 127.0.0.1, which inside a
+container is the container itself. See load_table().
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from dataclasses import dataclass
 import pyarrow as pa
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.exceptions import CommitFailedException
+from pyiceberg.io import load_file_io
 from pyiceberg.partitioning import UNPARTITIONED_PARTITION_SPEC, PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
@@ -26,16 +29,33 @@ from drone_ingest.config import Settings
 log = logging.getLogger(__name__)
 
 
-def get_catalog(settings: Settings) -> RestCatalog:
-    return RestCatalog("px4", **{
-        "uri": settings.catalog_uri,
-        "warehouse": settings.warehouse,
+def _s3_props(settings: Settings) -> dict[str, str]:
+    return {
         "s3.endpoint": settings.s3_endpoint,
         "s3.access-key-id": settings.s3_access_key,
         "s3.secret-access-key": settings.s3_secret_key,
         "s3.region": settings.s3_region,
         "s3.path-style-access": "true",
+    }
+
+
+def get_catalog(settings: Settings) -> RestCatalog:
+    catalog = RestCatalog("px4", **{
+        "uri": settings.catalog_uri,
+        "warehouse": settings.warehouse,
+        # don't ask Lakekeeper to mint STS credentials on every load: we bring our own keys
+        "header.X-Iceberg-Access-Delegation": "client-managed",
+        **_s3_props(settings),
     })
+    catalog._px4_s3_props = _s3_props(settings)  # used by load_table()
+    return catalog
+
+
+def load_table(catalog: RestCatalog, name: str) -> Table:
+    """Load a table whose FileIO uses our S3 settings instead of the server-provided endpoint."""
+    table = catalog.load_table(name)
+    table.io = load_file_io(catalog._px4_s3_props, table.metadata_location)
+    return table
 
 
 def _schema(*fields: tuple[str, object]) -> Schema:
@@ -126,7 +146,7 @@ def append(catalog: RestCatalog, name: str, rows: list[dict] | pa.Table, attempt
     if data.num_rows == 0:
         return 0
     for attempt in range(1, attempts + 1):
-        table: Table = catalog.load_table(name)
+        table = load_table(catalog, name)
         try:
             table.append(data)
             return data.num_rows
@@ -140,5 +160,5 @@ def append(catalog: RestCatalog, name: str, rows: list[dict] | pa.Table, attempt
 
 
 def scan(catalog: RestCatalog, name: str, columns: tuple[str, ...], row_filter: str | None = None) -> pa.Table:
-    table = catalog.load_table(name)
+    table = load_table(catalog, name)
     return table.scan(selected_fields=columns, **({"row_filter": row_filter} if row_filter else {})).to_arrow()

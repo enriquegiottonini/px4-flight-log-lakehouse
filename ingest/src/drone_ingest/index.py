@@ -6,17 +6,20 @@ import gzip
 import hashlib
 import json
 import logging
+import re
 import zlib
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
+import ijson
 from pyiceberg.catalog.rest import RestCatalog
 
 from drone_ingest import audit, catalog as cat, storage
 from drone_ingest.config import Settings
 from drone_ingest.http import request
-from drone_ingest.schemas import validate_records
+from drone_ingest.schemas import validate_record
 
 log = logging.getLogger(__name__)
 
@@ -29,15 +32,24 @@ class IndexFileError(RuntimeError):
 
 # --- pure functions (unit-tested) -------------------------------------------------------------
 
-def read_index_file(path: Path) -> list:
+def iter_index_file(path: Path) -> Iterator:
+    """Stream records from a gzip JSON array without loading the whole file (~2 GB as objects)."""
     try:
         with gzip.open(path, "rb") as f:
-            data = json.load(f)
-    except (EOFError, OSError, zlib.error, json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise IndexFileError(f"{path.name}: not a complete gzip JSON file ({type(e).__name__}: {e})") from e
-    if not isinstance(data, list):
-        raise IndexFileError(f"{path.name}: expected a JSON array, got {type(data).__name__}")
-    return data
+            # use_float: keep ints as int and floats as float (ijson defaults to Decimal), so the
+            # canonical JSON and its hash match what json.load would produce
+            yield from ijson.items(f, "item", use_float=True)
+    except (EOFError, OSError, zlib.error, ijson.JSONError, UnicodeDecodeError) as e:
+        raise IndexFileError(f"{path.name}: not a complete gzip JSON array ({type(e).__name__}: {e})") from e
+
+
+def read_index_file(path: Path) -> list:
+    return list(iter_index_file(path))
+
+
+def count_index_file(path: Path) -> int:
+    """Integrity check of a downloaded snapshot: parse it fully, keep nothing."""
+    return sum(1 for _ in iter_index_file(path))
 
 
 def canonical_json(record: dict) -> str:
@@ -57,24 +69,38 @@ class Diff:
     out_of_window: int = 0
 
 
+def classify(rec: dict, latest_hash: dict[str, str], start_date: date) -> tuple[str, dict | None]:
+    """One valid record -> ('out_of_window' | 'unchanged' | 'insert' | 'update', bronze row or None)."""
+    log_date = date.fromisoformat(rec["log_date"])
+    if log_date < start_date:
+        return "out_of_window", None
+    canon = canonical_json(rec)
+    h = payload_hash(canon)
+    prev = latest_hash.get(rec["log_id"])
+    if prev == h:
+        return "unchanged", None
+    kind = "insert" if prev is None else "update"
+    return kind, {"log_id": rec["log_id"], "log_date": log_date, "payload": canon, "payload_hash": h,
+                  "_change_type": kind}
+
+
 def diff_records(valid: list[dict], latest_hash: dict[str, str], start_date: date) -> Diff:
     """Compare a snapshot's valid records with bronze's latest hash per log_id."""
     diff = Diff()
     for rec in valid:
-        log_date = date.fromisoformat(rec["log_date"])
-        if log_date < start_date:
-            diff.out_of_window += 1
-            continue
-        canon = canonical_json(rec)
-        h = payload_hash(canon)
-        prev = latest_hash.get(rec["log_id"])
-        if prev == h:
-            diff.unchanged += 1
-            continue
-        row = {"log_id": rec["log_id"], "log_date": log_date, "payload": canon, "payload_hash": h,
-               "_change_type": "insert" if prev is None else "update"}
-        (diff.inserts if prev is None else diff.updates).append(row)
+        _add(diff, *classify(rec, latest_hash, start_date))
     return diff
+
+
+def _add(diff: Diff, kind: str, row: dict | None) -> None:
+    if kind == "insert":
+        diff.inserts.append(row)
+    elif kind == "update":
+        diff.updates.append(row)
+    elif kind == "unchanged":
+        diff.unchanged += 1
+    else:
+        diff.out_of_window += 1
 
 
 # --- I/O --------------------------------------------------------------------------------------
@@ -104,11 +130,25 @@ def _prune_snapshots(s3, settings: Settings) -> int:
     return len(expired)
 
 
+def healthcheck(settings: Settings) -> dict:
+    """HEAD the index URL (follows the 302 to the CDN). Raises if it doesn't answer 200."""
+    resp = request(settings.index_url, method="HEAD", timeout=30)
+    if resp.status != 200:
+        raise RuntimeError(f"{settings.index_url} answered HTTP {resp.status}")
+    return {"status": "ok", "url": settings.index_url, "etag": resp.headers.get("etag"),
+            "last_modified": resp.headers.get("last-modified")}
+
+
+def safe_id(run_id: str) -> str:
+    """Airflow run ids contain ':' and '+'; keep paths and S3 keys plain."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", run_id)
+
+
 def snapshot_index(settings: Settings, catalog: RestCatalog, run_id: str) -> dict:
     """Conditional GET of the index; on 200 land the raw gz + manifest. Returns a summary dict."""
     started = audit.now()
     etag = audit.last_loaded_etag(catalog)
-    work = Path(settings.work_dir) / run_id
+    work = Path(settings.work_dir) / safe_id(run_id)
     work.mkdir(parents=True, exist_ok=True)
     dest = work / "dbinfo.json.gz"
     log.info("GET %s If-None-Match=%s", settings.index_url, etag or "(none)")
@@ -121,12 +161,12 @@ def snapshot_index(settings: Settings, catalog: RestCatalog, run_id: str) -> dic
     if resp.status != 200:
         raise RuntimeError(f"unexpected HTTP {resp.status} from {settings.index_url}")
 
-    records = read_index_file(dest)  # raises IndexFileError on a truncated/corrupt download
+    n_records = count_index_file(dest)  # streams; raises IndexFileError on a truncated/corrupt download
     snapshot_date = started.date().isoformat()
-    folder = f"{INDEX_PREFIX}snapshot_date={snapshot_date}/run_id={run_id}/"
+    folder = f"{INDEX_PREFIX}snapshot_date={snapshot_date}/run_id={safe_id(run_id)}/"
     manifest = {
         "etag": resp.headers.get("etag"), "last_modified": resp.headers.get("last-modified"),
-        "bytes": resp.bytes_written, "records": len(records), "sha256": resp.sha256,
+        "bytes": resp.bytes_written, "records": n_records, "sha256": resp.sha256,
         "source_url": settings.index_url, "fetched_at": audit.now().isoformat(), "run_id": run_id,
     }
     s3 = storage.s3_client(settings)
@@ -140,10 +180,10 @@ def snapshot_index(settings: Settings, catalog: RestCatalog, run_id: str) -> dic
         **{k: manifest[k] for k in ("etag", "last_modified", "bytes", "records", "sha256")},
         "landing_key": folder + "dbinfo.json.gz", "run_id": run_id, "fetched_at": audit.now()}])
     audit.record_run(catalog, "index_snapshot", run_id, "success", started, source=manifest["etag"],
-                     read=len(records), bytes=resp.bytes_written)
+                     read=n_records, bytes=resp.bytes_written)
     log.info("200: %d records, %.1f MB -> s3://%s/%s (pruned %d old snapshots)",
-             len(records), resp.bytes_written / 1e6, settings.landing_bucket, folder, pruned)
-    return {"status": "downloaded", "etag": manifest["etag"], "records": len(records),
+             n_records, resp.bytes_written / 1e6, settings.landing_bucket, folder, pruned)
+    return {"status": "downloaded", "etag": manifest["etag"], "records": n_records,
             "bytes": resp.bytes_written, "manifest_key": folder + "_manifest.json"}
 
 
@@ -162,26 +202,31 @@ def load_index(settings: Settings, catalog: RestCatalog, run_id: str, manifest_k
     manifest_key = manifest_key or latest_manifest_key(settings)
     manifest = json.loads(storage.get_bytes(s3, settings.landing_bucket, manifest_key))
     data_key = manifest_key.replace("_manifest.json", "dbinfo.json.gz")
-    work = Path(settings.work_dir) / run_id
+    work = Path(settings.work_dir) / safe_id(run_id)
     work.mkdir(parents=True, exist_ok=True)
     local = work / "dbinfo.json.gz"
     storage.get_file(s3, settings.landing_bucket, data_key, local)
     if hashlib.sha256(local.read_bytes()).hexdigest() != manifest["sha256"]:
         raise IndexFileError(f"{data_key}: sha256 does not match its manifest")
 
-    records = read_index_file(local)
+    latest_hash = _latest_hashes(catalog)
+    diff, rejected, seen, n_read = Diff(), [], set(), 0
+    for rec in iter_index_file(local):  # one record at a time: validate -> window -> hash -> diff
+        n_read += 1
+        if (rejection := validate_record(rec, seen)) is not None:
+            rejected.append(rejection)
+            continue
+        _add(diff, *classify(rec, latest_hash, settings.index_start_date))
     local.unlink()
-    valid, rejected = validate_records(records)
-    diff = diff_records(valid, _latest_hashes(catalog), settings.index_start_date)
     ingested_at = audit.now()
     rows = [{**r, "_snapshot_etag": manifest["etag"], "_run_id": run_id,
              "_source_file": f"s3://{settings.landing_bucket}/{data_key}", "_ingested_at": ingested_at}
             for r in diff.inserts + diff.updates]
     cat.append(catalog, "bronze.logs_index_raw", rows)
     audit.record_rejections(catalog, run_id, rejected)
-    audit.record_run(catalog, "logs_index", run_id, "success", started, source=manifest["etag"], read=len(records),
+    audit.record_run(catalog, "logs_index", run_id, "success", started, source=manifest["etag"], read=n_read,
                      inserted=len(diff.inserts), updated=len(diff.updates), rejected=len(rejected))
-    summary = {"etag": manifest["etag"], "read": len(records), "inserted": len(diff.inserts),
+    summary = {"etag": manifest["etag"], "read": n_read, "inserted": len(diff.inserts),
                "updated": len(diff.updates), "unchanged": diff.unchanged,
                "out_of_window": diff.out_of_window, "rejected": len(rejected)}
     log.info("loaded index: %s", summary)

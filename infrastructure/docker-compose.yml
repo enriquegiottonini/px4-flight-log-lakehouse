@@ -3,6 +3,48 @@
 # Relative paths below resolve from this folder (infrastructure/); variables come from the root .env.
 name: px4-lakehouse
 
+# Shared by the four Airflow services (Phase 5)
+x-airflow-common: &airflow-common
+  build:
+    context: ..  # repo root, filtered by /.dockerignore
+    dockerfile: infrastructure/airflow/Dockerfile
+    args:
+      AIRFLOW_TAG: ${AIRFLOW_TAG:?set AIRFLOW_TAG in .env}
+  image: px4-lakehouse/airflow:${AIRFLOW_TAG}
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__PARALLELISM: "8"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"  # nothing downloads until you unpause a DAG
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    # No login (local toy, ports bound to 127.0.0.1): everyone is admin. Same no-auth non-goal as Trino.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set AIRFLOW_JWT_SECRET in .env}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?set AIRFLOW_API_SECRET_KEY in .env}
+    AIRFLOW__API__WORKERS: "1"  # 8 GB laptop budget
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW_CONN_TRINO_DEFAULT: '{"conn_type": "trino", "host": "trino", "port": 8080, "login": "airflow", "extra": {"catalog": "iceberg"}}'
+    # drone_ingest (runs from /opt/ingest-venv through its CLI; internal service names)
+    S3_ENDPOINT: http://rustfs:9000
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+    S3_SECRET_KEY: ${S3_SECRET_KEY}
+    CATALOG_URI: http://lakekeeper:8181/catalog
+    WORK_DIR: /opt/airflow/work
+    DISK_GUARD_PATH: /opt/airflow/work  # on the Docker VM disk, like the RustFS volume
+    INDEX_START_DATE: ${PX4_INDEX_START_DATE:-2025-01-01}
+    MAX_ULOGS_PER_RUN: ${PX4_MAX_ULOGS_PER_RUN:-}  # empty = every log of the day (D-004)
+  volumes:
+    - ../dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+    - airflow-work:/opt/airflow/work
+  user: "50000:0"
+  restart: unless-stopped
+  depends_on:
+    airflow-init:
+      condition: service_completed_successfully
+
 services:
   # One Postgres, one database + role per consumer: airflow (Phase 5), lakekeeper (Phase 3).
   postgres:
@@ -171,6 +213,65 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # --- Phase 5: orchestration (Airflow 3, LocalExecutor) ---------------------------
+
+  # Runs once: creates/upgrades Airflow's tables in the airflow database and the CDN pool
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - airflow db migrate && airflow pools set px4_pool 4 "PX4 CDN download/parse concurrency" && airflow version
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # UI + REST API + the execution API that task processes report to. http://localhost:8080
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "-s", "-o", "/dev/null", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  # Decides what runs when; with LocalExecutor it also runs the tasks (as subprocesses)
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "-s", "-o", "/dev/null", "http://localhost:8974/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+      # tasks need the bronze/audit namespaces (and so the whole catalog chain)
+      trino-init:
+        condition: service_completed_successfully
+
+  # Parses dags/*.py into serialized DAGs (separate from the scheduler since Airflow 3)
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 30s
+
 volumes:
   postgres-data:
   rustfs-data:
+  airflow-logs:
+  airflow-work:

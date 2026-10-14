@@ -17,6 +17,7 @@ from pyulog import ULog
 from drone_ingest import audit, catalog as cat, storage
 from drone_ingest.config import Settings
 from drone_ingest.http import request
+from drone_ingest.index import safe_id
 
 log = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ def fetch_ulogs(settings: Settings, catalog: RestCatalog, entries: list[dict], r
     """Download a batch from the CDN into landing. Already-landed files are skipped."""
     started = audit.now()
     s3 = storage.s3_client(settings)
-    work = Path(settings.work_dir) / run_id / "ulog"
+    work = Path(settings.work_dir) / safe_id(run_id) / "ulog"
     work.mkdir(parents=True, exist_ok=True)
     status = audit.ulog_status(catalog)  # current status, not the (possibly stale) one in the plan
     events: list[Event] = []
@@ -233,7 +234,7 @@ def parse_ulogs(settings: Settings, catalog: RestCatalog, entries: list[dict], r
     started = audit.now()
     s3 = storage.s3_client(settings)
     status = audit.ulog_status(catalog)
-    work = Path(settings.work_dir) / run_id / "parse"
+    work = Path(settings.work_dir) / safe_id(run_id) / "parse"
     work.mkdir(parents=True, exist_ok=True)
     tel_frames, msg_frames, events = [], [], []
     ingested_at = audit.now()
@@ -292,3 +293,25 @@ def purge_ulogs(settings: Settings, today: date | None = None) -> dict:
             purged.append(day.isoformat())
     log.info("purged %d ULog days before %s: %d files, %.1f MB", len(purged), cutoff, deleted_files, deleted_bytes / 1e6)
     return {"cutoff": cutoff.isoformat(), "days": purged, "files": deleted_files, "bytes": deleted_bytes}
+
+
+# --- all-in-one for one window (used by the backfill DAG, one day at a time) ----------------------
+
+def run_ulogs(settings: Settings, catalog: RestCatalog, run_id: str, start: date, end: date,
+              today: date | None = None) -> dict:
+    """purge -> plan -> fetch + parse each batch -> purge. Landing never holds more than the window."""
+    before = purge_ulogs(settings, today)
+    entries = plan_ulogs(settings, catalog, start, end)
+    totals = {"entries": len(entries), "downloaded": 0, "rejected": 0, "failed": 0, "parsed": 0,
+              "telemetry_rows": 0, "message_rows": 0}
+    for batch in batches(entries, settings.ulog_batch_size):
+        fetched = fetch_ulogs(settings, catalog, batch, run_id)
+        parsed = parse_ulogs(settings, catalog, batch, run_id)
+        for k in ("downloaded", "rejected", "failed"):
+            totals[k] += fetched[k]
+        totals["rejected"] += parsed["rejected"]
+        for k in ("parsed", "telemetry_rows", "message_rows"):
+            totals[k] += parsed[k]
+    after = purge_ulogs(settings, today)
+    return {"window": [start.isoformat(), end.isoformat()], **totals,
+            "purged_days": sorted(set(before["days"]) | set(after["days"]))}

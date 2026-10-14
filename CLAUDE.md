@@ -176,7 +176,10 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
   - RustFS supports STS `AssumeRole`. Lakekeeper vends short-lived keys + session token, scoped to the table's prefix.
   - **Endpoint `http://rustfs.localhost:9000`** works in both places: containers resolve it through a compose network alias on `rustfs`, and browsers (Chrome/Firefox) resolve `*.localhost` to 127.0.0.1 → published port 9000.
   - **CORS:** `rustfs-init` puts a read-only (GET/HEAD) CORS rule on `s3://lakehouse` for `http://localhost:8181` / `http://127.0.0.1:8181`.
-  - Trino doesn't ask for vended credentials (`vended-credentials-enabled=false`): it keeps its own keys and `http://rustfs:9000`. PyIceberg can do either.
+  - **Server-side engines don't use vended credentials.**
+    - Trino has `vended-credentials-enabled=false`.
+    - PyIceberg sends `X-Iceberg-Access-Delegation: client-managed` and replaces each table's FileIO with its own endpoint and keys (`drone_ingest.catalog.load_table`).
+    - Reason: Lakekeeper returns `s3.endpoint=http://rustfs.localhost:9000` in every table response, even in client-managed mode, and PyIceberg lets that override the client. pyarrow's S3 client (curl) resolves any `*.localhost` to 127.0.0.1 *without DNS*, which inside a container is the container itself (Phase 5 finding).
 
 `infrastructure/trino/catalog/iceberg.properties` (replaces the proposal's JDBC block; names verified against Trino 483, which uses **`fs.s3.enabled`**, not `fs.native-s3.enabled`):
 
@@ -215,7 +218,7 @@ catalog = RestCatalog("px4", uri="http://lakekeeper:8181/catalog", warehouse="px
 | `lakekeeper-bootstrap` | `curlimages/curl:8.22.0` (bootstrap + warehouse) | — | Phase 3 |
 | `trino` | `trinodb/trino:483` (`mem_limit: 3g`, heap 2 GB) | 8085 | Phase 3 |
 | `trino-init` | `trinodb/trino:483` (CLI; creates the schemas) | — | Phase 3 |
-| `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` | 8080 | Phase 5 |
+| `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` (image 4.1 GB) | 8080 | Phase 5 |
 | `charts` | build `infrastructure/charts/Dockerfile` (`dbt-charts[trino]==0.9.1`) | 8088 | Phase 8 |
 
 Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astronomer-cosmos==1.15.1`, `dbt-trino==1.10.6`, `pyiceberg==0.12.0`, `pyulog==1.2.4`, `dbt-charts==0.9.1` (needs Python 3.10–3.13).
@@ -410,7 +413,7 @@ Checklist:
 - [x] Corrupt fixture records land in `bronze.rejected_records` with all 8 reasons, read back in Trino (test rows then removed with Trino `DELETE`).
 - [x] `purge-ulogs` deletes only folders older than the cutoff.
 - Footprint:
-  - `load-index` peaks at **~2.6 GB of RAM** on the bootstrap and ~2 GB on a daily run, because the whole 477k-record index is parsed into Python objects. Size the Airflow container accordingly in Phase 5, or switch to a streaming JSON parser.
+  - `load-index` peaked at ~2.6 GB of RAM in Phase 4 (the whole index parsed into objects). Phase 5 switched it to a streaming parser (`ijson`): **472 MB** and 7.9 s, with hashes byte-identical (re-load → 0 inserts, 0 updates).
   - `parse-ulogs` stays at ~240 MB per batch of 20.
 
 Findings and gotchas:
@@ -440,18 +443,63 @@ make s3 ARGS="ls --recursive s3://landing/px4/"
 
 ### Phase 5: Orchestration with Airflow 3
 **Introduces:** DAGs, tasks, operators, `LocalExecutor`, pools, retries with backoff, *dynamic task mapping* (one mapped task per ULog batch), *assets* (data-aware scheduling), `AIRFLOW_CONN_*` connections.
-- [ ] `infrastructure/airflow/Dockerfile` (build context = repo root; DAGs mounted from `dags/`): Airflow 3.3.2 + `drone_ingest` + a dbt virtualenv at `/opt/dbt-venv`.
-- [ ] Services `airflow-init`, `airflow-apiserver`, `airflow-scheduler` and `airflow-dag-processor`.
-- [ ] DAG `px4_ingest_daily` (02:00 America/Hermosillo, `catchup=False`): `api_healthcheck` → `snapshot_index` (a `ShortCircuitOperator` on 304 skips the rest) → `validate_manifest` → `load_index` → `purge_expired_ulogs` → `plan_ulogs` → `fetch_ulogs.expand(batch)` (pool `px4_pool`, 4 slots) → `parse_ulogs.expand(batch)` → emits `bronze.*` assets.
-- [ ] DAG `px4_backfill` (manual, `start_date`/`end_date`): the same ULog flow, **one `log_date` at a time with a purge between days**, so raw files never exceed one day.
-- [ ] DAG `px4_maintenance` (weekly): `expire_snapshots` + `optimize` via Trino, plus orphan-file cleanup.
-- [ ] Pointing the API URL at a nonexistent host produces retries, then a failure with a readable log in the UI.
+
+How it's wired:
+- **Image** (`infrastructure/airflow/Dockerfile`, build context = repo root filtered by `/.dockerignore`):
+  - Airflow 3.3.2 plus `apache-airflow-providers-trino` (6.6.1), pinned by Airflow's constraints file.
+  - `/opt/ingest-venv`: `drone_ingest` installed exactly from `uv.lock` (`uv sync --frozen`).
+  - `/opt/dbt-venv`: `dbt-trino==1.10.6` + `dbt-core==1.10.23`.
+  - Separate venvs are required, not just tidy: Airflow ships pandas 3 / pyarrow 25, and `drone_ingest` is locked to pandas < 3 / pyarrow 26.
+- **The DAGs only orchestrate.**
+  - Each task runs the `drone-ingest` CLI through `BashOperator`.
+  - The CLI's last stdout line (a JSON summary) becomes the task's XCom, and the next task reads it.
+  - Shared bits live in `dags/px4_common.py`.
+- **Services:**
+  - `airflow-init`: `db migrate`, then creates pool `px4_pool` (4 slots).
+  - `airflow-apiserver` (:8080, UI + REST + execution API).
+  - `airflow-scheduler`: runs the tasks with LocalExecutor, health on :8974.
+  - `airflow-dag-processor`.
+- **Auth:** none (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`, same non-goal as Trino).
+- **DAGs are paused at creation:** nothing downloads until you unpause one.
+- **Connections:** `AIRFLOW_CONN_TRINO_DEFAULT` (JSON form, catalog `iceberg`).
+- **Volumes:** `airflow-logs`, and `airflow-work` for downloads and plan files, which tasks share because LocalExecutor runs everything in the scheduler container.
+
+Checklist:
+- [x] `infrastructure/airflow/Dockerfile` + 4 services. `make up` waits for `airflow-init` too (`INIT_JOBS`).
+- [x] DAG `px4_ingest_daily` (02:00 America/Hermosillo = 09:00 UTC, `catchup=False`):
+  - `api_healthcheck` → `snapshot_index` → `index_changed` (short-circuit: on 304 it skips **only** `load_index`) → `load_index` (asset `bronze.logs_index_raw`).
+  - Then, `none_failed` so it runs either way: `purge_expired_ulogs` → `plan_ulogs` (uploads of the day before the run day) → `fetch_ulogs` × batches (pool `px4_pool`) → `parse_ulogs` × batches (assets `bronze.telemetry_raw`, `bronze.log_messages_raw`).
+  - Params: `index_url`, `max_ulogs` (default = `PX4_MAX_ULOGS_PER_RUN` from `.env`).
+  - Verified with a scheduled run and a manual run: 304 → `load_index` skipped → 25 + 25 ULogs fetched and parsed.
+- [x] DAG `px4_backfill` (manual; `start_date`/`end_date` inclusive; `max_ulogs` per day):
+  - Mapped `backfill_day` tasks with `max_active_tis_per_dagrun=1` run `drone-ingest run-ulogs` (purge → plan → fetch + parse → purge) one day at a time.
+  - Verified: 10-11 then 10-12, 3 logs each; each day purged its own landing folder afterwards.
+- [x] DAG `px4_maintenance` (Sundays 03:00): for every Iceberg table, `optimize` → `expire_snapshots(7d)` → `remove_orphan_files(7d)` via `TrinoHook`, reporting whether a `replace` snapshot was committed. Verified: `audit.ingestion_runs` went from 3 files to 1, and the other tables were already compact.
+- [x] An API URL at a nonexistent host (`index_url=https://px4-api.invalid/dbinfo`, retry delay shortened through Variable `px4_retry_delay_seconds=5`) gives 4 tries of `api_healthcheck`, each with 5 client-side retries.
+  - The log shows readable `URLError … Name or service not known` lines, then `giving up … after 5 attempts`.
+  - Downstream tasks become `upstream_failed`.
+- Footprint: Airflow's 4 services use ~1.1 GB of RAM (scheduler ~530 MB at idle), and the whole Docker VM ~5 GB of 7.7 GB. Cold `make up` takes ~45 s.
+
+Findings and gotchas:
+- **Airflow 3 manual runs have no logical date**: `ds` and `logical_date` are *missing* from the template context, not `None`. The run day is `(dag_run.logical_date or dag_run.run_after) | ds` (`RUN_DAY` in `px4_common.py`).
+- **Unpausing a DAG immediately runs its latest missed slot**, even with `catchup=False` (Airflow 3's default `CronTriggerTimetable`). Set the `max_ulogs` cap *before* unpausing.
+- **A param default overrides the container env**: the DAG always sets `MAX_ULOGS_PER_RUN`. Its default therefore comes from the container's value, or an empty default would silently remove the `.env` cap.
+- **`docker compose up --wait` fails** when a one-shot service exits and nothing depends on it. `trino-init` became a dependency of `airflow-scheduler`, which needs its schemas anyway.
+- **A new named volume is root-owned** unless the image already has that directory. The image creates `/opt/airflow/work` with a `.keep` file, owned by `airflow`.
+- **`rustfs.localhost` breaks curl-based clients inside containers** (see Phase 3, catalog wiring). PyIceberg now uses its own S3 settings, like Trino.
+
 ```bash
-open http://localhost:8080
-docker compose exec airflow-scheduler airflow dags list
-docker compose exec airflow-scheduler airflow tasks test px4_ingest_daily snapshot_index 2026-10-13
-docker compose exec airflow-scheduler airflow dags trigger px4_backfill -c '{"start_date":"2026-10-06","end_date":"2026-10-12"}'
-docker stats                                   # watch RAM (target: < 8 GB)
+make up && open http://localhost:8080          # no login
+make airflow ARGS="dags list"
+make airflow ARGS="dags list-import-errors"
+make airflow ARGS="tasks render px4_ingest_daily plan_ulogs 2026-10-14"   # see the rendered bash command
+make airflow ARGS="dags unpause px4_ingest_daily"   # careful: runs the latest missed 02:00 slot right away
+make airflow ARGS="dags trigger px4_ingest_daily -c '{\"max_ulogs\": 5}'"
+make airflow ARGS="dags trigger px4_backfill -c '{\"start_date\": \"2026-10-11\", \"end_date\": \"2026-10-12\", \"max_ulogs\": 3}'"
+make airflow ARGS="variables set px4_retry_delay_seconds 5"   # fast retries for experiments; delete afterwards
+curl -s localhost:8080/api/v2/dags/px4_ingest_daily/dagRuns | jq '.dag_runs[] | {dag_run_id, state}'
+# UI: Assets tab → bronze tables and the runs that updated them (consumed by Phase 7)
+docker stats
 ```
 
 ### Phase 6: Transformation with dbt
@@ -523,7 +571,7 @@ docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a 
 │   └── scripts/{wait-init.sh,smoke_test.sh}
 ├── explore/                     # Phase 1 profiling scripts and reports
 ├── ingest/                      # drone_ingest package: src/drone_ingest/{config,http,storage,catalog,schemas,index,ulog,audit,cli}.py, tests/
-├── dags/                        # Airflow DAGs (mounted into the Airflow containers)
+├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_backfill, px4_maintenance (+ px4_common helpers)
 └── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/
 ```
 
@@ -533,7 +581,7 @@ Rule: files that configure, build or run services go in `infrastructure/`. Code 
 
 - **Lakekeeper is 0.x**: pinned to `v0.14.0` (released 2026-10-07), with `v0.13.6` as the fallback. Trino 483 ↔ Lakekeeper is verified (Phase 3). PyIceberg 0.12 writing tables that Trino reads is verified (Phase 4).
 - **RustFS + Lakekeeper STS**: verified (Phase 3). The browser path depends on `*.localhost` resolving to 127.0.0.1, which Chrome and Firefox do. Other browsers may need a `/etc/hosts` entry `127.0.0.1 rustfs.localhost`.
-- **Disk usage from full ULog**: ~9.3 GB/day against ~13 GiB free. Mitigated by the 1-day raw window, purge-before-fetch and the `MIN_FREE_DISK_GB` guard (D-004). Free up disk if a heavy upload day gets close to the limit.
+- **Disk usage from full ULog**: ~9.3 GB/day of raw ULog. Free space has swung between 9 and 30 GiB during the build; images now take ~12.8 GB (the Airflow image is 4.1 GB). Mitigated by the 1-day raw window, purge-before-fetch, the `MIN_FREE_DISK_GB` guard, and `PX4_MAX_ULOGS_PER_RUN` in `.env` (the local `.env` currently caps at 25/day; clear it to fetch whole days). `docker builder prune` can reclaim the Docker build cache (~2.4 GB).
 - **RustFS 1.0.x and dbt Charts 0.9.x are young**: versions pinned; standard S3 API only.
 - **ULog topic schema drift across firmware versions**: the parser tolerates missing fields (null column + a count in audit).
 - **Being blocked by PX4 (403/444)**: abort the run, no retries.

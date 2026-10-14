@@ -1,0 +1,6 @@
+# Image builds use the repo root as context; send Docker only what the Dockerfiles copy.
+*
+!ingest/pyproject.toml
+!ingest/uv.lock
+!ingest/src
+**/__pycache__

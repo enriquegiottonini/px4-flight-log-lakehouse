@@ -2,19 +2,20 @@
 SHELL := /bin/bash
 COMPOSE := docker compose  # finds infrastructure/docker-compose.yml via COMPOSE_FILE in .env
 # One-shot services that must exit 0 for the stack to count as up (grows in later phases)
-INIT_JOBS := rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init
+INIT_JOBS := rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init airflow-init
 -include .env
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps logs config psql s3 trino test
+.PHONY: help env up down reset ps logs config psql s3 trino airflow test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-8s %s\n", $$1, $$2}'
 
 env:  ## Create .env from .env.example with random secrets (refuses to overwrite)
 	@test ! -f .env || { echo ".env already exists; delete it first to regenerate"; exit 1; }
-	@sed -e "s/change-me/__SECRET__/" .env.example | while IFS= read -r line; do \
+	@sed -e "s/change-me-fernet/__FERNET__/; s/change-me/__SECRET__/" .env.example | while IFS= read -r line; do \
+	  line="$${line/__FERNET__/$$(openssl rand -base64 32 | tr '+/' '-_')}"; \
 	  echo "$${line/__SECRET__/$$(openssl rand -hex 16)}"; done > .env
 	@echo "wrote .env"
 
@@ -47,6 +48,9 @@ s3:  ## Run an AWS CLI s3 command against RustFS: make s3 ARGS="ls s3://landing"
 trino:  ## Trino SQL shell on the iceberg catalog, or run one statement: make trino SQL="show schemas"
 	@if [ -n "$(SQL)" ]; then $(COMPOSE) exec trino trino --catalog iceberg --execute "$(SQL)"; \
 	else $(COMPOSE) exec trino trino --catalog iceberg; fi
+
+airflow:  ## Airflow CLI in the scheduler container: make airflow ARGS="dags list"
+	$(COMPOSE) exec airflow-scheduler airflow $(or $(ARGS),dags list)
 
 test:  ## Unit tests of the ingestion package (fixtures only: no network, no services)
 	cd ingest && uv run pytest -q

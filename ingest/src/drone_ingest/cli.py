@@ -1,12 +1,14 @@
 """drone-ingest command line. Every command prints a JSON summary on stdout; logs go to stderr.
 
     drone-ingest init-tables
+    drone-ingest healthcheck
     drone-ingest snapshot-index [--run-id ID]
     drone-ingest load-index     [--run-id ID] [--manifest KEY]
     drone-ingest plan-ulogs     [--out plan.json] [--start YYYY-MM-DD --end YYYY-MM-DD]
     drone-ingest fetch-ulogs    --plan plan.json [--batch N]
     drone-ingest parse-ulogs    --plan plan.json [--batch N]
-    drone-ingest purge-ulogs
+    drone-ingest purge-ulogs    [--today YYYY-MM-DD]
+    drone-ingest run-ulogs      --start YYYY-MM-DD --end YYYY-MM-DD   (purge, plan, fetch, parse, purge)
 """
 
 from __future__ import annotations
@@ -53,22 +55,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", default=f"manual__{datetime.now(timezone.utc):%Y%m%dT%H%M%S}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-tables", help="create missing bronze/audit tables")
+    sub.add_parser("healthcheck", help="check that the PX4 index URL answers")
     sub.add_parser("snapshot-index", help="conditional GET of the PX4 index into landing")
     p = sub.add_parser("load-index", help="diff-load the latest landed snapshot into bronze")
     p.add_argument("--manifest", help="landing key of a _manifest.json (default: newest)")
     p = sub.add_parser("plan-ulogs", help="list ULogs to fetch/parse for a log_date window")
     p.add_argument("--start", type=date.fromisoformat)
     p.add_argument("--end", type=date.fromisoformat, help="exclusive")
-    p.add_argument("--out", default="plan.json")
+    p.add_argument("--out", help="plan file (default: WORK_DIR/<run id>/plan.json)")
     for name in ("fetch-ulogs", "parse-ulogs"):
         p = sub.add_parser(name)
         p.add_argument("--plan", required=True)
         p.add_argument("--batch", type=int, help="batch index (default: all batches)")
-    sub.add_parser("purge-ulogs", help="delete landed ULog days older than ULOG_RETENTION_DAYS")
+    p = sub.add_parser("purge-ulogs", help="delete landed ULog days older than ULOG_RETENTION_DAYS")
+    p.add_argument("--today", type=date.fromisoformat, help="reference day (default: UTC today)")
+    p = sub.add_parser("run-ulogs", help="purge, plan, fetch and parse every batch of a window, then purge")
+    p.add_argument("--start", type=date.fromisoformat, required=True)
+    p.add_argument("--end", type=date.fromisoformat, required=True, help="exclusive")
+    p.add_argument("--today", type=date.fromisoformat, help="reference day for purging (default: UTC today)")
     args = parser.parse_args(argv)
 
     _setup_logging(args.run_id, args.command)
     settings = get_settings()
+    if args.command == "healthcheck":
+        print(json.dumps({"command": args.command, **index.healthcheck(settings)}))
+        return 0
     catalog = cat.get_catalog(settings)
     if args.command != "purge-ulogs":
         cat.ensure_tables(catalog)
@@ -84,14 +95,18 @@ def main(argv: list[str] | None = None) -> int:
         plan = {"run_id": args.run_id, "entries": len(entries),
                 "window": [str(args.start or settings.ulog_start_date), str(args.end or settings.ulog_end_date)],
                 "batches": ulog.batches(entries, settings.ulog_batch_size)}
-        Path(args.out).write_text(json.dumps(plan, indent=1))
-        result = {k: plan[k] for k in ("entries", "window")} | {"batches": len(plan["batches"]), "out": args.out}
+        out = Path(args.out or Path(settings.work_dir) / index.safe_id(args.run_id) / "plan.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(plan, indent=1))
+        result = {k: plan[k] for k in ("entries", "window")} | {"batches": len(plan["batches"]), "out": str(out)}
     elif args.command == "fetch-ulogs":
         result = ulog.fetch_ulogs(settings, catalog, _load_plan(args.plan, args.batch), args.run_id)
     elif args.command == "parse-ulogs":
         result = ulog.parse_ulogs(settings, catalog, _load_plan(args.plan, args.batch), args.run_id)
     elif args.command == "purge-ulogs":
-        result = ulog.purge_ulogs(settings)
+        result = ulog.purge_ulogs(settings, args.today)
+    elif args.command == "run-ulogs":
+        result = ulog.run_ulogs(settings, catalog, args.run_id, args.start, args.end, args.today)
     print(json.dumps({"command": args.command, "run_id": args.run_id, **result}, default=str))
     return 0
 

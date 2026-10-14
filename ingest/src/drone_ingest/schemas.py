@@ -39,26 +39,34 @@ def _reason(err: ValidationError) -> tuple[str, str]:
     return f"{kind}_{field}", first["msg"]
 
 
-def validate_records(records: list, entity: str = "logs_index") -> tuple[list[dict], list[Rejection]]:
-    """Split a snapshot into valid records (first occurrence per log_id) and rejections."""
+def validate_record(rec, seen: set[str], entity: str = "logs_index") -> Rejection | None:
+    """Check one record; `seen` tracks log_ids already accepted in this snapshot."""
+    if not isinstance(rec, dict):
+        return Rejection(entity, None, "not_an_object", type(rec).__name__, _raw(rec))
+    log_id = rec.get("log_id") if isinstance(rec.get("log_id"), str) else None
+    try:
+        IndexRecord.model_validate(rec)
+    except ValidationError as e:
+        reason, detail = _reason(e)
+        return Rejection(entity, log_id, reason, detail, _raw(rec))
+    if rec["log_id"] in seen:
+        return Rejection(entity, log_id, "duplicate_log_id_in_snapshot", "kept the first one", _raw(rec))
+    seen.add(rec["log_id"])
+    return None
+
+
+def _raw(rec) -> str:
+    return json.dumps(rec, ensure_ascii=False, default=str)[:20_000]
+
+
+def validate_records(records, entity: str = "logs_index") -> tuple[list[dict], list[Rejection]]:
+    """Split records into valid ones (first occurrence per log_id) and rejections."""
     valid: list[dict] = []
     rejected: list[Rejection] = []
     seen: set[str] = set()
     for rec in records:
-        raw = json.dumps(rec, ensure_ascii=False, default=str)[:20_000]
-        if not isinstance(rec, dict):
-            rejected.append(Rejection(entity, None, "not_an_object", type(rec).__name__, raw))
-            continue
-        log_id = rec.get("log_id") if isinstance(rec.get("log_id"), str) else None
-        try:
-            IndexRecord.model_validate(rec)
-        except ValidationError as e:
-            reason, detail = _reason(e)
-            rejected.append(Rejection(entity, log_id, reason, detail, raw))
-            continue
-        if rec["log_id"] in seen:
-            rejected.append(Rejection(entity, log_id, "duplicate_log_id_in_snapshot", "kept the first one", raw))
-            continue
-        seen.add(rec["log_id"])
-        valid.append(rec)
+        if (rejection := validate_record(rec, seen, entity)) is None:
+            valid.append(rec)
+        else:
+            rejected.append(rejection)
     return valid, rejected

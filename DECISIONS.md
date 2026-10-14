@@ -38,6 +38,7 @@ One entry per decision. Format: context → decision → consequences. Newer dec
   - Backfill runs one day at a time with purges in between.
   - Parsed telemetry (~40k rows/day) stays in Iceberg permanently.
   - Rejected alternatives: parse-then-delete (no raw copy kept) and sampling (not full coverage).
+  - Phase 5: `PX4_MAX_ULOGS_PER_RUN` in `.env` caps downloads per run or day (empty = all, the D-004 default), for machines that can't hold a full day. `load-index` streams the index (`ijson`), using ~470 MB of RAM instead of ~2.6 GB.
 
 ## D-005: Vehicle catalog derived from the index (2026-10-13)
 
@@ -60,6 +61,19 @@ One entry per decision. Format: context → decision → consequences. Newer dec
   - No auth.
   - STS / vended credentials **on** (revised 2026-10-13, after Phase 3): RustFS supports STS `AssumeRole`, and the Lakekeeper web UI's DuckDB-WASM query engine (LoQE) can only read data with vended credentials. The warehouse endpoint is `http://rustfs.localhost:9000` (a compose network alias, and `*.localhost` → 127.0.0.1 in browsers), and `s3://lakehouse` gets a read-only CORS rule for the UI origin. Trino keeps its own static keys and `http://rustfs:9000`.
   - The UI's "Authentication is OFF" banner stays: it's shown whenever no OIDC provider is configured. Only the matching startup log line is filtered.
+  - Phase 5: PyIceberg sends `client-managed` delegation and uses its own S3 endpoint and keys, like Trino. The warehouse endpoint `rustfs.localhost` is for browsers only, because curl-based S3 clients map `*.localhost` to loopback inside containers.
 - **Consequences:**
   - Gains: a standard REST catalog shared by Trino and PyIceberg, and a web UI for warehouses, namespaces, tables and snapshots.
   - Costs: three more services (migrate, serve, bootstrap) and a young 0.x dependency.
+
+## D-008: drone_ingest runs in its own virtualenv, called through its CLI (2026-10-14)
+
+- **Context:** the Airflow 3.3.2 image ships pandas 3.0.5 / pyarrow 25 / pydantic 2.13, while `drone_ingest` is locked to pandas < 3 / pyarrow 26 (`uv.lock`).
+- **Decision:**
+  - Install `drone_ingest` into `/opt/ingest-venv` exactly from `uv.lock`.
+  - DAGs call its CLI with `BashOperator`. Each command's final JSON summary line becomes the task's XCom.
+  - dbt gets its own venv (`/opt/dbt-venv`) for the same reason.
+- **Consequences:**
+  - Airflow's own dependencies are never touched.
+  - The same CLI runs on the host (`uv run drone-ingest …`) and in Airflow.
+  - Tasks share files (plan files, downloads) through the `airflow-work` volume, which works because LocalExecutor runs every task in the scheduler container.
