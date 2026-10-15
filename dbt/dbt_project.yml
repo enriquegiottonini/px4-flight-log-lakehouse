@@ -1,0 +1,42 @@
+# PX4 flight-log lakehouse: bronze (written by drone_ingest) -> silver -> gold, all SQL on Trino.
+name: px4_lakehouse
+version: "1.0.0"
+profile: px4_lakehouse
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+flags:
+  send_anonymous_usage_stats: false   # no telemetry from this project
+  require_certificate_validation: true  # dbt-trino behavior flag: opt in to the future default (no TLS here anyway)
+
+vars:
+  # gold excludes simulator (SITL) logs by default; set to true to include them
+  include_simulation: false
+
+models:
+  px4_lakehouse:
+    silver:
+      +schema: silver
+      +materialized: table
+      +tags: ["silver"]
+    gold:
+      +schema: gold
+      +materialized: table
+      +tags: ["gold"]
+      +contract:
+        enforced: true  # fixed columns and types, so dashboards can't break silently
+
+seeds:
+  px4_lakehouse:
+    +schema: silver
+    +tags: ["seed"]
+
+snapshots:
+  px4_lakehouse:
+    +schema: silver
+    +tags: ["silver"]

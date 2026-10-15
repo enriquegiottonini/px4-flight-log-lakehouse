@@ -1,0 +1,38 @@
+version: 2
+
+seeds:
+  - name: flight_modes
+    description: PX4 navigation modes (flight_review plot_app/config_tables.py). IDs missing here appear as "Unknown (<id>)" in dim_flight_mode.
+    config: {column_types: {mode_id: integer, mode_name: varchar}}
+    columns:
+      - name: mode_id
+        data_tests: [unique, not_null]
+  - name: error_labels
+    description: Error labels a pilot can attach to an uploaded log.
+    config: {column_types: {error_label_id: integer, error_label: varchar}}
+    columns:
+      - name: error_label_id
+        data_tests: [unique, not_null]
+  - name: vtol_modes
+    description: VTOL flight phases.
+    config: {column_types: {vtol_mode_id: integer, vtol_mode: varchar}}
+  - name: rating_map
+    description: Raw `rating` values -> clean rating (junk -> null; BRAVO!/BRAWO! -> great) and crash flag.
+    config: {column_types: {raw_rating: varchar, rating: varchar, is_crash: boolean}}
+    columns:
+      - name: raw_rating
+        data_tests: [unique, not_null]
+  - name: mav_type_classes
+    description: MAVLink vehicle types grouped into the classes used by dashboards.
+    config: {column_types: {mav_type: varchar, vehicle_class: varchar}}
+    columns:
+      - name: mav_type
+        data_tests: [unique, not_null]
+      - name: vehicle_class
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [multirotor, fixed_wing, vtol, helicopter, rover, other]
+  - name: duration_bands
+    description: Flight duration buckets, [min_s, max_s).
+    config: {column_types: {duration_band: varchar, min_s: integer, max_s: integer, band_order: integer}}

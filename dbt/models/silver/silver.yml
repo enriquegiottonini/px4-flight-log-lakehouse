@@ -1,0 +1,131 @@
+version: 2
+
+models:
+  - name: stg_logs
+    description: One row per log (latest version) parsed from bronze.logs_index_raw and cleaned (CLAUDE.md 3.3).
+    columns:
+      - name: log_id
+        data_tests: [unique, not_null]
+      - name: uploaded_date
+        description: Upload date (the index's log_date). The flight date only exists in the ULog (fct_flight.flight_started_at).
+        data_tests: [not_null]
+      - name: mav_type
+        data_tests:
+          - relationships:  # a new MAVLink type would silently become "other"
+              arguments: {to: ref('mav_type_classes'), field: mav_type}
+              config: {severity: warn}
+      - name: vehicle_class
+        data_tests:
+          - accepted_values:
+              arguments: {values: [multirotor, fixed_wing, vtol, helicopter, rover, other]}
+      - name: rating
+        description: Clean rating; junk (BRAVO!, 1, none, empty) mapped through the rating_map seed.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [good, great, unsatisfactory, crash_sw_hw, crash_pilot]}
+      - name: wind_speed
+        description: Null when the index had the -1 sentinel.
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: 0, max_value: 100}
+      - name: duration_s
+        description: Null outside 1-86,400 s (wrapped-around counters, zero-length logs).
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: 1, max_value: 86400}
+      - name: airframe_type
+        description: Null when the index held the numeric SYS_AUTOSTART id instead (see sys_autostart_id).
+        data_tests:
+          - dbt_expectations.expect_column_values_to_not_match_regex:
+              arguments: {regex: '^[0-9]+$'}
+
+  - name: stg_log_mode_segments
+    description: Flight-mode timeline, one row per [mode, seconds] pair of flight_mode_durations.
+    data_tests:
+      - dbt_expectations.expect_compound_columns_to_be_unique:
+          arguments: {column_list: [log_id, segment_seq]}
+    columns:
+      - name: mode_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_flight_mode'), field: mode_id}
+
+  - name: stg_log_error_labels
+    columns:
+      - name: error_label_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_error_label'), field: error_label_id}
+
+  - name: stg_telemetry
+    description: 1 Hz telemetry with impossible values nulled.
+    data_tests:
+      - dbt_expectations.expect_compound_columns_to_be_unique:
+          arguments: {column_list: [log_id, t_boot_s]}
+    columns:
+      - name: lat
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: -90, max_value: 90}
+      - name: lon
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: -180, max_value: 180}
+      - name: battery_remaining
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: 0, max_value: 1}
+
+  - name: stg_log_messages
+    description: PX4 console messages; message_template groups messages that differ only in numbers.
+
+  - name: vehicle_latest
+    description: Current attributes per vehicle_uuid (input of the snap_vehicles snapshot).
+    columns:
+      - name: vehicle_uuid
+        data_tests: [unique, not_null]
+
+  - name: dim_vehicle
+    columns:
+      - name: vehicle_uuid
+        data_tests: [unique, not_null]
+
+  - name: dim_flight_mode
+    columns:
+      - name: mode_id
+        data_tests: [unique, not_null]
+
+  - name: dim_error_label
+    columns:
+      - name: error_label_id
+        data_tests: [unique, not_null]
+
+  - name: dim_date
+    columns:
+      - name: date_day
+        data_tests: [unique, not_null]
+
+  - name: fct_flight
+    description: One row per log with index attributes and, when its ULog was parsed, telemetry aggregates.
+    columns:
+      - name: log_id
+        data_tests: [unique, not_null]
+      - name: vehicle_uuid
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_vehicle'), field: vehicle_uuid}
+      - name: battery_used_pct
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: -100, max_value: 100}
+              config: {severity: warn}  # a battery swap mid-log can look like negative use
+
+  - name: fct_mode_segment
+    description: Flight-mode segments with mode names and the log attributes dashboards slice by.
+
+  - name: fct_telemetry_1min
+    description: Telemetry per log and minute of flight.
+    data_tests:
+      - dbt_expectations.expect_compound_columns_to_be_unique:
+          arguments: {column_list: [log_id, minute_of_log]}

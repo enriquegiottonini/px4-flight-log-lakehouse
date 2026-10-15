@@ -1,0 +1,10 @@
+snapshots:
+  - name: snap_vehicles
+    description: >
+      SCD type 2 history of each vehicle (hardware, airframe, firmware). Every dbt snapshot run compares
+      vehicle_latest with the stored current row and closes/opens versions when a checked column changes.
+    relation: ref('vehicle_latest')
+    config:
+      unique_key: vehicle_uuid
+      strategy: check
+      check_cols: [sys_hw, mav_type, airframe_type, airframe_name, fw_major_minor]

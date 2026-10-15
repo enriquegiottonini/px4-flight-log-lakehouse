@@ -244,16 +244,16 @@ Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astro
   - `failed`: retried next run (`size_mismatch`).
 
 **Silver (dbt):**
-- `stg_logs`: dedups by `log_id`, keeping the latest `_ingested_at`. Renames `log_date` → `uploaded_date`, adds `is_simulation` (SITL), and nulls `duration_s` outside 1–86,400 s. Casts types and converts empty strings and sentinels to nulls. Splits `airframe_type` into `airframe_type` / `sys_autostart_fallback`. Normalizes `rating` via the `rating_map` seed. Parses `ver_sw_release` into `fw_major_minor`. Groups `mav_type` into `vehicle_class` (multirotor, fixed_wing, vtol, rover, other).
+- `stg_logs`: dedups by `log_id`, keeping the latest `_ingested_at`. Renames `log_date` → `uploaded_date`, adds `is_simulation` (SITL), and nulls `duration_s` outside 1–86,400 s. Casts types and converts empty strings and sentinels to nulls. Splits `airframe_type` into `airframe_type` / `sys_autostart_fallback`. Normalizes `rating` via the `rating_map` seed. Parses `ver_sw_release` into `fw_major_minor`. Groups `mav_type` into `vehicle_class` (multirotor, fixed_wing, vtol, helicopter, rover, other; helicopters were added because there are ~9k of them). Incremental `merge` on `log_id`.
 - `stg_log_mode_segments`: UNNESTs `flight_mode_durations` with ordinality.
 - `stg_log_error_labels`: UNNESTs `error_labels`.
 - `stg_telemetry`: drops impossible coordinates (0,0 or out of range), absurd altitudes, and battery outside 0–1.
-- `stg_log_messages`
-- `snap_vehicles`: SCD2 by `vehicle_uuid` (hardware, airframe, firmware).
+- `stg_log_messages`: adds `module` and `message_template` (numbers/hex → `#`), so a log's 10k unique error lines collapse into a few templates.
+- `vehicle_latest` → `snap_vehicles`: SCD2 by `vehicle_uuid` (check strategy on hardware, type, airframe, firmware).
 - `dim_vehicle`, `dim_flight_mode`, `dim_error_label`, `dim_date`.
 - `fct_flight` (one row per log, with `flight_started_at` from GPS UTC when available, and aggregated telemetry: max altitude, max speed, battery %/min), `fct_mode_segment`, `fct_telemetry_1min`.
 
-**Gold (tables with `contract: enforced`):**
+**Gold (tables with `contract: enforced`; simulator logs excluded by the `real_flights()` macro unless `--vars '{include_simulation: true}'`):**
 - `mart_flights_by_class_month`: logs and flight hours by `vehicle_class` and month.
 - `mart_flight_mode_usage`: % of time per mode and class.
 - `mart_reliability_daily`: crash ratings, error labels and logged errors per day.
@@ -261,7 +261,7 @@ Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astro
 - `mart_flight_envelope`: max/avg altitude and speed per class (telemetry).
 - `mart_battery_efficiency`: battery % per minute and per km, by class and duration band.
 - `mart_vehicle_utilization`: flights, hours and days since last log per vehicle.
-- `mart_top_log_messages`: most frequent error messages.
+- `mart_top_log_messages`: warnings/errors by template, with `occurrences` and `logs_affected`. Rank by `logs_affected`, because raw counts are dominated by a few spammy logs.
 - `mart_pipeline_runs`: over `audit.*`.
 
 **Seeds:** `flight_modes.csv`, `error_labels.csv`, `vtol_modes.csv`, `rating_map.csv`, `mav_type_classes.csv`, `duration_bands.csv`.
@@ -503,18 +503,51 @@ docker stats
 ```
 
 ### Phase 6: Transformation with dbt
-**Introduces:** `source` vs. `model`, materializations (`table`, `incremental` with `merge`), seeds, snapshots (SCD2), generic tests and `dbt-expectations`, contracts, `generate_schema_name`, docs.
-- [ ] `dbt/` project with a `profiles.yml` that reads env vars, and the models from section 6.
-- [ ] `dbt build` green.
-- [ ] No dirty `rating`, `wind_speed=-1` or int `airframe_type` reaches silver (enforced by tests).
-- [ ] Dropping silver and gold and re-running gives identical counts.
-- [ ] `source freshness` on `_ingested_at`: warn at 26 h, error at 48 h.
+**Introduces:** `source` vs. `model`, materializations (`table`, `incremental` with `merge`/`append`), seeds, snapshots (SCD2), generic tests and `dbt-expectations`, singular tests, contracts, `generate_schema_name`, macros, docs.
+
+How it's wired:
+- **dbt runs in the Airflow scheduler container**, from `/opt/dbt-venv` (dbt-core 1.10.23 + dbt-trino 1.10.6), with the project `dbt/` bind-mounted at `/opt/dbt`. That's the same place Cosmos will use in Phase 7.
+- **Connection:** `profiles.yml` reads `TRINO_HOST` / `TRINO_PORT` (container: `trino:8080`; host defaults: `localhost:8085`). User `dbt`, no auth.
+- **Packages:** `metaplane/dbt_expectations` 0.10.10, which pulls in `godatadriven/dbt_date`.
+- **Macros:**
+  - `generate_schema_name`: `+schema: silver` means exactly `silver`.
+  - `date_spine`: Trino `sequence()`, used by `dim_date`.
+  - `real_flights`: the simulator filter for gold.
+- **Bronze and audit are dbt `source`s**, not models: dbt never writes them.
+
+Checklist:
+- [x] `dbt/` project (22 models, 6 seeds, 1 snapshot, 52 tests) with a `profiles.yml` that reads env vars.
+- [x] `dbt build` green: **81/81 in ~11 s**. `stg_logs` builds 314,800 rows in ~5.5 s; later runs MERGE only new bronze rows (0 when nothing arrived).
+- [x] No dirty `rating`, `wind_speed=-1` or numeric `airframe_type` reaches silver (accepted_values, `dbt_expectations` range and regex tests).
+  - Proven by removing the `wind_speed` cleaning: the test fails with 314,291 rows, and downstream models are skipped.
+- [x] Gold contracts enforced: declaring `flight_hours` as `bigint` fails the build with `flight_hours | DOUBLE | BIGINT | data type mismatch`.
+- [x] Dropping all 29 silver/gold tables and re-running gives **identical row counts** for every table.
+- [x] `source freshness` on `_ingested_at`: PASS (warn 26 h, error 48 h); with `warn_after` temporarily at 1 h it reports WARN.
+- [x] `dbt docs generate --static` → `dbt/target/static_index.html`, a single 2.9 MB file to open locally.
+
+Findings and gotchas:
+- **Integer division:** in Trino, `bigint / bigint` truncates. Every mode share came out 0.0, and a 0..1 range test passed anyway. Fixed by casting first; the singular test `assert_mode_shares_sum_to_one` now guards it.
+- **Decimal literals:** `3600.0` is a `decimal` in Trino, so with enforced contracts use `3600e0` (a double) or explicit casts.
+- **Selecting by path vs tag:** `-s silver` selects by path and misses the snapshot, which lives in `snapshots/`. Use `-s tag:silver` or plain `dbt build`.
+- **`require_certificate_validation` is a dbt-trino behavior flag** (`flags:` in `dbt_project.yml`), not a profile key.
+- **The SCD2 snapshot starts now:** `snap_vehicles` has one version per vehicle (26,470) until a later run sees a vehicle's hardware, airframe or firmware change. The same applies to the MERGE update path in `stg_logs`: it shows up when tomorrow's index re-rates a log.
+- **Snapshots hold history that can't be rebuilt.** The drop-and-rebuild test dropped `snap_vehicles` too, which is fine now; later, don't drop snapshot tables.
+
 ```bash
-docker compose exec airflow-scheduler bash -c 'cd /opt/dbt && /opt/dbt-venv/bin/dbt debug'
-dbt seed && dbt build -s +stg_logs     # one model plus its parents
-dbt ls -s tag:gold; dbt compile -s fct_flight && cat target/compiled/…/fct_flight.sql
-dbt docs generate                      # open target/index.html locally
-select * from iceberg.silver."stg_logs$history";   -- each dbt run = a new snapshot
+make dbt                                   # dbt debug
+make dbt ARGS="deps"                       # packages (dbt_packages/ is gitignored)
+make dbt ARGS="build"                      # seeds + models + snapshot + tests
+make dbt ARGS="build -s +fct_flight"       # one model plus its parents
+make dbt ARGS="build -s tag:gold"
+make dbt ARGS="run -s stg_logs --full-refresh"   # rebuild an incremental model from scratch
+make dbt ARGS="test -s stg_logs"
+make dbt ARGS="source freshness"
+make dbt ARGS="compile -s fct_flight" && cat dbt/target/compiled/px4_lakehouse/models/silver/fct_flight.sql
+make dbt ARGS="show -s mart_flight_mode_usage --limit 10"
+make dbt ARGS="build --vars '{include_simulation: true}'"   # gold including SITL logs
+make dbt ARGS="docs generate --static" && open dbt/target/static_index.html
+make trino SQL='SELECT * FROM silver."stg_logs$snapshots"'          # each dbt run = an Iceberg snapshot
+make trino SQL="SELECT * FROM silver.snap_vehicles WHERE dbt_valid_to IS NOT NULL LIMIT 5"   # SCD2 history
 ```
 
 ### Phase 7: dbt inside Airflow (Cosmos)

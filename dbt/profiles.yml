@@ -1,0 +1,15 @@
+# Credentials come from env vars only. Inside the Airflow containers TRINO_HOST=trino / TRINO_PORT=8080;
+# the defaults below work from the host through the published port.
+px4_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      method: none            # no auth: local stack (see CLAUDE.md, Trino section)
+      user: "{{ env_var('TRINO_USER', 'dbt') }}"
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: "{{ env_var('TRINO_PORT', '8085') | int }}"
+      http_scheme: http
+      database: iceberg       # Trino catalog
+      schema: silver          # default schema; models override it with +schema
+      threads: 4

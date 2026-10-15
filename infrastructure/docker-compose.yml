@@ -35,8 +35,14 @@ x-airflow-common: &airflow-common
     DISK_GUARD_PATH: /opt/airflow/work  # on the Docker VM disk, like the RustFS volume
     INDEX_START_DATE: ${PX4_INDEX_START_DATE:-2025-01-01}
     MAX_ULOGS_PER_RUN: ${PX4_MAX_ULOGS_PER_RUN:-}  # empty = every log of the day (D-004)
+    # dbt (Phase 6): project mounted at /opt/dbt, run from /opt/dbt-venv
+    DBT_PROFILES_DIR: /opt/dbt
+    DBT_PROJECT_DIR: /opt/dbt
+    TRINO_HOST: trino
+    TRINO_PORT: "8080"
   volumes:
     - ../dags:/opt/airflow/dags:ro
+    - ../dbt:/opt/dbt  # read-write: dbt writes target/, logs/, dbt_packages/ here
     - airflow-logs:/opt/airflow/logs
     - airflow-work:/opt/airflow/work
   user: "50000:0"

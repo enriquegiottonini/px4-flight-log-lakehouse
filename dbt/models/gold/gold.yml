@@ -1,0 +1,117 @@
+version: 2
+
+# Gold = what dashboards read. Contracts are enforced (dbt_project.yml): the build fails if a mart's
+# columns or types drift from what is declared here. Simulator logs are excluded (macro real_flights).
+
+models:
+  - name: mart_flights_by_class_month
+    description: Logs and flight hours per vehicle class and upload month.
+    data_tests:
+      - dbt_expectations.expect_compound_columns_to_be_unique:
+          arguments: {column_list: [month, vehicle_class]}
+    columns:
+      - {name: month, data_type: date}
+      - {name: vehicle_class, data_type: varchar}
+      - {name: logs, data_type: bigint}
+      - {name: flight_hours, data_type: double}
+      - {name: avg_duration_min, data_type: double}
+      - {name: crash_logs, data_type: bigint}
+
+  - name: mart_flight_mode_usage
+    description: Hours and share of time per flight mode, by vehicle class.
+    columns:
+      - {name: vehicle_class, data_type: varchar}
+      - {name: mode_name, data_type: varchar}
+      - {name: hours, data_type: double}
+      - name: share_of_class_time
+        data_type: double
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments: {min_value: 0, max_value: 1}
+      - {name: logs_using_mode, data_type: bigint}
+
+  - name: mart_reliability_daily
+    description: Crash ratings, error labels and logged errors per upload day.
+    columns:
+      - name: uploaded_date
+        data_type: date
+        data_tests: [unique, not_null]
+      - {name: logs, data_type: bigint}
+      - {name: crash_logs, data_type: bigint}
+      - {name: unsatisfactory_logs, data_type: bigint}
+      - {name: logs_with_error_labels, data_type: bigint}
+      - {name: logs_with_logged_errors, data_type: bigint}
+      - {name: logged_errors, data_type: bigint}
+      - {name: share_logs_with_errors, data_type: double}
+
+  - name: mart_firmware_adoption
+    description: Share of each PX4 release line (major.minor) per month.
+    columns:
+      - {name: month, data_type: date}
+      - {name: fw_major_minor, data_type: varchar}
+      - {name: logs, data_type: bigint}
+      - {name: share_of_month, data_type: double}
+
+  - name: mart_flight_envelope
+    description: Altitude range, speed and distance per vehicle class (logs with telemetry).
+    columns:
+      - name: vehicle_class
+        data_type: varchar
+        data_tests: [unique]
+      - {name: flights_with_telemetry, data_type: bigint}
+      - {name: avg_alt_range_m, data_type: double}
+      - {name: p95_alt_range_m, data_type: double}
+      - {name: avg_max_h_speed_ms, data_type: double}
+      - {name: p95_max_h_speed_ms, data_type: double}
+      - {name: avg_distance_km, data_type: double}
+
+  - name: mart_battery_efficiency
+    description: Battery % per minute and per km by vehicle class and duration band.
+    columns:
+      - {name: vehicle_class, data_type: varchar}
+      - {name: duration_band, data_type: varchar}
+      - {name: duration_band_order, data_type: integer}
+      - {name: flights, data_type: bigint}
+      - {name: avg_battery_pct_per_min, data_type: double}
+      - {name: avg_battery_pct_per_km, data_type: double}
+
+  - name: mart_vehicle_utilization
+    description: Logs, flight hours, crashes and recency per vehicle.
+    columns:
+      - name: vehicle_uuid
+        data_type: varchar
+        data_tests: [unique, not_null]
+      - {name: vehicle_class, data_type: varchar}
+      - {name: sys_hw, data_type: varchar}
+      - {name: logs, data_type: bigint}
+      - {name: flight_hours, data_type: double}
+      - {name: crash_logs, data_type: bigint}
+      - {name: first_upload, data_type: date}
+      - {name: last_upload, data_type: date}
+      - {name: days_since_last_upload, data_type: bigint}
+
+  - name: mart_top_log_messages
+    description: PX4 warnings/errors grouped by message template.
+    columns:
+      - {name: level, data_type: varchar}
+      - {name: module, data_type: varchar}
+      - {name: message_template, data_type: varchar}
+      - {name: occurrences, data_type: bigint}
+      - {name: logs_affected, data_type: bigint}
+      - {name: first_seen, data_type: date}
+      - {name: last_seen, data_type: date}
+
+  - name: mart_pipeline_runs
+    description: One row per ingestion run and entity (audit.ingestion_runs).
+    columns:
+      - {name: run_id, data_type: varchar}
+      - {name: entity, data_type: varchar}
+      - {name: status, data_type: varchar}
+      - {name: started_at, data_type: timestamp(6) with time zone}
+      - {name: finished_at, data_type: timestamp(6) with time zone}
+      - {name: duration_s, data_type: double}
+      - {name: records_read, data_type: bigint}
+      - {name: records_inserted, data_type: bigint}
+      - {name: records_updated, data_type: bigint}
+      - {name: records_rejected, data_type: bigint}
+      - {name: bytes, data_type: bigint}

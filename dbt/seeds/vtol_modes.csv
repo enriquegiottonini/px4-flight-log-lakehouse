@@ -1,0 +1,4 @@
+vtol_mode_id,vtol_mode
+1,Transition
+2,Fixed-Wing
+3,Multicopter

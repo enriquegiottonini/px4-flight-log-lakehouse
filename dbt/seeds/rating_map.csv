@@ -1,0 +1,10 @@
+raw_rating,rating,is_crash
+good,good,false
+great,great,false
+unsatisfactory,unsatisfactory,false
+crash_sw_hw,crash_sw_hw,true
+crash_pilot,crash_pilot,true
+BRAVO!,great,false
+BRAWO!,great,false
+none,,false
+1,,false

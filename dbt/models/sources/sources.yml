@@ -1,0 +1,36 @@
+version: 2
+
+# Bronze and audit are written by drone_ingest (Airflow), not by dbt: they are sources, not models.
+sources:
+  - name: bronze
+    database: iceberg
+    schema: bronze
+    description: Raw PX4 data, append-only, exactly as ingested (CLAUDE.md section 6).
+    tables:
+      - name: logs_index_raw
+        description: One row per new or changed index record; `payload` is the canonical JSON.
+        config:
+          loaded_at_field: _ingested_at
+          freshness:  # the index is regenerated daily and loaded at ~09:00 UTC
+            warn_after: {count: 26, period: hour}
+            error_after: {count: 48, period: hour}
+        columns:
+          - name: log_id
+            data_tests: [not_null]
+          - name: payload_hash
+            data_tests: [not_null]
+      - name: telemetry_raw
+        description: ULog topics averaged to 1 Hz (one row per log and boot-second).
+      - name: log_messages_raw
+        description: Logged messages from the ULogs (PX4's console log).
+      - name: rejected_records
+        description: Records the ingestion rejected, with a reason.
+
+  - name: audit
+    database: iceberg
+    schema: audit
+    description: What the ingestion did and when.
+    tables:
+      - name: ingestion_runs
+      - name: ulog_downloads
+      - name: index_snapshots

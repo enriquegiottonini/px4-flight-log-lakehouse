@@ -1,0 +1,3 @@
+packages:
+  - package: metaplane/dbt_expectations   # range/regex tests; lists Trino as supported
+    version: 0.10.10

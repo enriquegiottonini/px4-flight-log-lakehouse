@@ -1,0 +1,25 @@
+mav_type,vehicle_class
+Quadrotor,multirotor
+Hexarotor,multirotor
+Octorotor,multirotor
+Tricopter,multirotor
+Fixed Wing,fixed_wing
+VTOL Standard,vtol
+Tiltrotor VTOL,vtol
+Two-rotor VTOL (Tailsitter),vtol
+Quad-rotor VTOL (Tailsitter),vtol
+VTOL Tailsitter,vtol
+VTOL reserved 3,vtol
+VTOL reserved 4,vtol
+VTOL reserved 5,vtol
+Coaxial helicopter,helicopter
+Normal helicopter with tail rotor,helicopter
+Ground Rover,rover
+"Surface Vessel, Boat, Ship",other
+Submarine,other
+Rocket,other
+"Airship, controlled",other
+"Free balloon, uncontrolled",other
+Generic,other
+Ground installation,other
+unknown type,other

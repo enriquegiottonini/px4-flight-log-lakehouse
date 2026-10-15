@@ -7,7 +7,7 @@ INIT_JOBS := rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init airf
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps logs config psql s3 trino airflow test
+.PHONY: help env up down reset ps logs config psql s3 trino airflow dbt test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-8s %s\n", $$1, $$2}'
@@ -51,6 +51,9 @@ trino:  ## Trino SQL shell on the iceberg catalog, or run one statement: make tr
 
 airflow:  ## Airflow CLI in the scheduler container: make airflow ARGS="dags list"
 	$(COMPOSE) exec airflow-scheduler airflow $(or $(ARGS),dags list)
+
+dbt:  ## dbt in the scheduler container (project dbt/ at /opt/dbt): make dbt ARGS="build -s +stg_logs"
+	$(COMPOSE) exec airflow-scheduler bash -c 'cd /opt/dbt && /opt/dbt-venv/bin/dbt $(or $(ARGS),debug)'
 
 test:  ## Unit tests of the ingestion package (fixtures only: no network, no services)
 	cd ingest && uv run pytest -q
