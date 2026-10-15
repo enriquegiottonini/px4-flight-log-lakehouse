@@ -742,6 +742,7 @@ curl -s localhost:8181/management/v1/warehouse | python3 -m json.tool | grep -A3
 ├── definition/                  # assignment + instructor example (do not modify)
 ├── infrastructure/              # everything that runs the platform (no business logic)
 │   ├── docker-compose.yml       # 8 containers; relative paths resolve from this folder
+│   ├── portal.html              # start page: every web UI + reachability check (`make portal`)
 │   ├── postgres/init/           # creates the airflow and lakekeeper roles + databases
 │   ├── setup/                   # setup.py (one-shot configuration) + aws-config (path-style, for the aws CLI)
 │   ├── trino/{etc,catalog}/     # server config, catalogs (iceberg, tpch)

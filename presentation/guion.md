@@ -157,6 +157,7 @@ Si algo tarda, mientras corre: explicar que el *test* de dbt detiene la publicac
 - [ ] `px4_transform` **activo**. Los demás DAGs pausados, para disparar `px4_ingest_daily` a mano.
 - [ ] Un `make airflow ARGS="dags trigger px4_transform"` reciente y en verde, para que los dashboards tengan datos frescos.
 - [ ] `make charts-check` → los 4 tableros `OK`.
+- [ ] `make portal`: la página de inicio con todos los enlaces, con las 5 interfaces en verde (*reachable*).
 - [ ] Pestañas abiertas: Airflow, consola RustFS, Lakekeeper UI, dashboard; terminal en la raíz del repo.
 - [ ] Si se hace la demo de borrar y recuperar: después de *Restore*, confirmar que `make charts-check` sigue en `OK`.
 - [ ] Copia del plan B (abajo) en el escritorio.

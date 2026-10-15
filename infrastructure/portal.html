@@ -1,0 +1,204 @@
+<!doctype html>
+<!-- Start page for the local stack: every web UI in one place. Static, no dependencies, works offline
+     (plan B) and straight from disk: `make portal`. Status = a reachability ping from the browser. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PX4 Lakehouse Portal</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --text: #15171c; --muted: #5d6371; --border: #e1e4ea;
+    --accent: #2563d9; --accent-soft: #e8effc; --code: #eef1f5;
+    --ok: #16884a; --ok-soft: #e3f4ea; --bad: #b9480f; --bad-soft: #fbece3; --wait: #8a909c; --wait-soft: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1014; --surface: #171a20; --text: #e6e8ec; --muted: #9ba1ad; --border: #282c35;
+      --accent: #7ea6ff; --accent-soft: #1d2638; --code: #20242c;
+      --ok: #45c97f; --ok-soft: #15291e; --bad: #ff9566; --bad-soft: #33201a; --wait: #6b717d; --wait-soft: #22252c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 32px 0 12px; }
+  header p { margin: 0; color: var(--muted); }
+  code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .summary { display: flex; align-items: center; gap: 10px; }
+  .summary span { color: var(--muted); font-size: 14px; }
+  button {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .step { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .card h3 { margin: 0; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .open {
+    display: block; padding: 9px 12px; border-radius: 8px; background: var(--accent-soft);
+    font-weight: 600; overflow-wrap: anywhere;
+  }
+  .open small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; }
+  .login { font-size: 13px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 10px; margin-top: auto; }
+
+  .status { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; color: var(--wait); background: var(--wait-soft); }
+  .status::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+  .status.up { color: var(--ok); background: var(--ok-soft); }
+  .status.down { color: var(--bad); background: var(--bad-soft); }
+
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>PX4 flight-log lakehouse</h1>
+      <p>Every UI of the local stack, in pipeline order. Start it with <code>make up</code>.</p>
+    </div>
+    <div class="summary">
+      <span id="summary">Checking…</span>
+      <button id="recheck" type="button">Check again</button>
+    </div>
+  </header>
+
+  <h2>Web UIs</h2>
+  <div class="grid">
+    <section class="card">
+      <div class="card-head"><span class="step">1 · Orchestrate</span><span class="status" data-ping="http://localhost:8080/api/v2/monitor/health">checking</span></div>
+      <h3>Airflow</h3>
+      <p>DAGs, runs, task logs and the assets that chain ingestion to the dbt transform.</p>
+      <a class="open" href="http://localhost:8080">Open Airflow<small>localhost:8080</small></a>
+      <div class="links">
+        <a href="http://localhost:8080/dags/px4_ingest_daily">px4_ingest_daily</a>
+        <a href="http://localhost:8080/dags/px4_transform">px4_transform</a>
+        <a href="http://localhost:8080/dags/px4_maintenance">px4_maintenance</a>
+        <a href="http://localhost:8080/assets">Assets</a>
+      </div>
+      <div class="login">No login. Trigger with <code>{"max_ulogs": 5}</code> or <code>{"day": "2026-10-10"}</code>.</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><span class="step">2 · Store</span><span class="status" data-ping="http://localhost:9000/health">checking</span></div>
+      <h3>RustFS console</h3>
+      <p>The S3 buckets: <code>landing</code> (raw API files), <code>lakehouse</code> (Iceberg tables), <code>reports</code> (HTML/PDF boards).</p>
+      <a class="open" href="http://localhost:9001/rustfs/console/">Open RustFS console<small>localhost:9001</small></a>
+      <div class="login">Log in with <code>S3_ACCESS_KEY</code> / <code>S3_SECRET_KEY</code> from <code>.env</code>. Expiry rules: <code>make lifecycle</code>.</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><span class="step">3 · Catalog</span><span class="status" data-ping="http://localhost:8181/health">checking</span></div>
+      <h3>Lakekeeper</h3>
+      <p>Iceberg catalog: warehouse <code>px4</code> → namespaces → tables. <b>Preview</b> runs DuckDB in your browser, <b>Versioning</b> shows snapshots, <b>Deleted</b> restores a dropped table.</p>
+      <a class="open" href="http://localhost:8181/ui/">Open Lakekeeper UI<small>localhost:8181/ui</small></a>
+      <div class="links">
+        <a href="http://localhost:8181/ui/warehouse">Warehouses</a>
+      </div>
+      <div class="login">No login. The red "Authentication is OFF" banner is expected.</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><span class="step">4 · Query</span><span class="status" data-ping="http://localhost:8085/v1/info">checking</span></div>
+      <h3>Trino</h3>
+      <p>Every SQL statement that dbt, the dashboards and you run, with its plan and timing.</p>
+      <a class="open" href="http://localhost:8085/ui/">Open Trino UI<small>localhost:8085/ui</small></a>
+      <div class="login">Any username, no password. SQL from the terminal: <code>make trino SQL="show schemas"</code>.</div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><span class="step">5 · Visualize</span><span class="status" data-ping="http://localhost:8088/">checking</span></div>
+      <h3>Dashboards</h3>
+      <p>dbt Charts boards over the gold tables, refreshed after every transform run.</p>
+      <a class="open" href="http://localhost:8088/fleet_overview/">Open Fleet overview<small>localhost:8088</small></a>
+      <div class="links">
+        <a href="http://localhost:8088/flight_behavior/">Flight behavior</a>
+        <a href="http://localhost:8088/reliability/">Reliability</a>
+        <a href="http://localhost:8088/pipeline_health/">Pipeline health</a>
+      </div>
+      <div class="login">No login. Publish check: <code>make charts-check</code>.</div>
+    </section>
+  </div>
+
+  <h2>From the terminal</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>What</th><th>Where</th><th>How</th></tr></thead>
+      <tbody>
+        <tr><td>Stack status</td><td>8 containers</td><td><code>make ps</code> · <code>make logs S=airflow</code></td></tr>
+        <tr><td>S3 API (RustFS)</td><td><code>localhost:9000</code></td><td><code>make s3 ARGS="ls s3://landing/px4/"</code> · <code>make lifecycle</code></td></tr>
+        <tr><td>SQL (Trino)</td><td><code>localhost:8085</code></td><td><code>make trino</code> (shell) · <code>make trino SQL="…"</code></td></tr>
+        <tr><td>dbt</td><td>inside <code>airflow</code></td><td><code>make dbt ARGS="build -s tag:gold"</code></td></tr>
+        <tr><td>Airflow CLI</td><td>inside <code>airflow</code></td><td><code>make airflow ARGS="dags list"</code></td></tr>
+        <tr><td>PostgreSQL</td><td><code>localhost:5432</code></td><td><code>make psql</code> · <code>make psql DB=lakekeeper</code></td></tr>
+        <tr><td>Whole pipeline</td><td>API → dashboards</td><td><code>infrastructure/scripts/smoke_test.sh</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>Status is a reachability ping from this browser, repeated every 20 s; <code>make ps</code> is authoritative. Every port is bound to 127.0.0.1.</footer>
+</main>
+
+<script>
+  // no-cors: the services send no CORS headers, but an opaque response still proves the port answered
+  async function ping(url) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    try {
+      await fetch(url, { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function checkAll() {
+    const pills = [...document.querySelectorAll("[data-ping]")];
+    // Previewers that load the page as a data: URL get a public origin, and the browser blocks every
+    // request to localhost from it: say so instead of reporting every service as down.
+    if (location.protocol === "data:") {
+      pills.forEach((pill) => { pill.className = "status"; pill.textContent = "status n/a"; });
+      document.getElementById("summary").textContent = "Status needs the page opened from disk: make portal";
+      return;
+    }
+    const results = await Promise.all(pills.map(async (pill) => {
+      const up = await ping(pill.dataset.ping);
+      pill.className = "status " + (up ? "up" : "down");
+      pill.textContent = up ? "reachable" : "no response";
+      return up;
+    }));
+    const up = results.filter(Boolean).length;
+    document.getElementById("summary").textContent =
+      up === results.length ? `All ${up} UIs reachable` : `${up} of ${results.length} UIs reachable`;
+  }
+
+  document.getElementById("recheck").addEventListener("click", checkAll);
+  setInterval(() => { if (document.visibilityState === "visible") checkAll(); }, 20000);
+  checkAll();
+</script>
+</body>
+</html>

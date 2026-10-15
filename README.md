@@ -58,6 +58,8 @@ make env      # .env with random secrets (never commit it)
 make up       # builds the Airflow image the first time (~5 min), then waits until everything is healthy
 ```
 
+`make portal` opens a start page with every UI in one place ([infrastructure/portal.html](infrastructure/portal.html)), and shows which ones are reachable.
+
 Then open http://localhost:8080. All DAGs start **paused**, so nothing downloads until you choose:
 
 1. **Set a download cap first.** `PX4_MAX_ULOGS_PER_RUN` in `.env` (e.g. `25`), then `make up`. Empty means every log of the day (~500 files, ~9 GB, D-004).
@@ -105,6 +107,7 @@ make trino SQL="SELECT count(*) FROM gold.mart_flight_envelope"
 ```bash
 make help                      # every target
 make ps | make logs S=trino    # status / follow one service's logs
+make portal                    # start page: every UI in one place
 make trino SQL="SELECT vehicle_class, sum(logs) FROM gold.mart_flights_by_class_month GROUP BY 1"
 make airflow ARGS="dags list"
 make dbt ARGS="build -s +fct_flight"

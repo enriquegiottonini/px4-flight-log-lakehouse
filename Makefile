@@ -5,7 +5,7 @@ COMPOSE := docker compose  # finds infrastructure/docker-compose.yml via COMPOSE
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps logs config psql s3 lifecycle trino airflow dbt dct charts-check test
+.PHONY: help env up down reset ps portal logs config psql s3 lifecycle trino airflow dbt dct charts-check test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-13s %s\n", $$1, $$2}'
@@ -29,6 +29,9 @@ reset:  ## Stop and DELETE all data volumes (Postgres + RustFS)
 
 ps:  ## Show all containers, including the finished one-shot jobs
 	@$(COMPOSE) ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'
+
+portal:  ## Open the start page: every web UI in one place, with a reachability check
+	@open infrastructure/portal.html 2>/dev/null || xdg-open infrastructure/portal.html
 
 logs:  ## Follow logs: make logs [S=service]
 	$(COMPOSE) logs -f $(S)
