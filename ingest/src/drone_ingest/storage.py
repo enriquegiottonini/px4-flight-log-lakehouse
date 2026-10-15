@@ -32,28 +32,11 @@ def head(client, bucket: str, key: str) -> dict | None:
         raise
 
 
-def list_prefixes(client, bucket: str, prefix: str) -> list[str]:
-    """Immediate "sub-folders" under prefix, e.g. px4/ulog/log_date=2026-10-13/."""
-    out: list[str] = []
-    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
-        out += [p["Prefix"] for p in page.get("CommonPrefixes", [])]
-    return sorted(out)
-
-
 def list_keys(client, bucket: str, prefix: str) -> list[dict]:
     out: list[dict] = []
     for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
         out += page.get("Contents", [])
     return out
-
-
-def delete_prefix(client, bucket: str, prefix: str) -> tuple[int, int]:
-    """Delete every object under prefix. Returns (objects, bytes) deleted."""
-    objects = list_keys(client, bucket, prefix)
-    for i in range(0, len(objects), 1000):
-        chunk = objects[i:i + 1000]
-        client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": o["Key"]} for o in chunk], "Quiet": True})
-    return len(objects), sum(o["Size"] for o in objects)
 
 
 def put_file(client, bucket: str, key: str, path: Path, metadata: dict[str, str] | None = None) -> None:

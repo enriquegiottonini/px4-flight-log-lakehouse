@@ -96,10 +96,6 @@ _rejected = _schema(
     ("entity", StringType()), ("log_id", StringType()), ("reason", StringType()), ("detail", StringType()),
     ("raw", StringType()), ("_run_id", StringType()), ("_rejected_at", TimestamptzType()),
 )
-_index_snapshots = _schema(
-    ("etag", StringType()), ("last_modified", StringType()), ("bytes", LongType()), ("records", LongType()),
-    ("sha256", StringType()), ("landing_key", StringType()), ("run_id", StringType()), ("fetched_at", TimestamptzType()),
-)
 _ingestion_runs = _schema(
     ("entity", StringType()), ("run_id", StringType()), ("status", StringType()), ("source", StringType()),
     ("read", LongType()), ("inserted", LongType()), ("updated", LongType()), ("rejected", LongType()),
@@ -117,14 +113,13 @@ TABLES: dict[str, TableDef] = {
     "bronze.telemetry_raw": TableDef(_telemetry, _partition(_telemetry, "_log_date", IdentityTransform(), "_log_date")),
     "bronze.log_messages_raw": TableDef(_messages, _partition(_messages, "_log_date", IdentityTransform(), "_log_date")),
     "bronze.rejected_records": TableDef(_rejected),
-    "audit.index_snapshots": TableDef(_index_snapshots),
     "audit.ingestion_runs": TableDef(_ingestion_runs),
     "audit.ulog_downloads": TableDef(_ulog_downloads),
 }
 
 
 def ensure_tables(catalog: RestCatalog) -> list[str]:
-    """Create any missing table (idempotent). Namespaces come from trino-init (Phase 3)."""
+    """Create any missing table (idempotent). Namespaces come from the setup job (infrastructure/setup/setup.py)."""
     created = []
     existing = {".".join(t) for ns in ("bronze", "audit") for t in catalog.list_tables(ns)}
     for name, tdef in TABLES.items():

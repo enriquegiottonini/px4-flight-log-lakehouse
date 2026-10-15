@@ -114,31 +114,6 @@ def _latest_hashes(catalog: RestCatalog) -> dict[str, str]:
     return {k: v[1] for k, v in latest.items()}
 
 
-def _prune_snapshots(s3, settings: Settings) -> int:
-    """Keep only the newest N snapshot folders (snapshot_date=*/run_id=*/)."""
-    keep = max(settings.index_snapshot_retention, 1)
-    folders = [run for day in storage.list_prefixes(s3, settings.landing_bucket, INDEX_PREFIX)
-               for run in storage.list_prefixes(s3, settings.landing_bucket, day)]
-    stamped = []
-    for folder in folders:
-        meta = storage.head(s3, settings.landing_bucket, folder + "_manifest.json")
-        stamped.append((meta["LastModified"].timestamp() if meta else 0.0, folder))  # incomplete runs sort first
-    stamped.sort()
-    expired = [folder for _, folder in stamped[:-keep]] if len(stamped) > keep else []
-    for folder in expired:
-        storage.delete_prefix(s3, settings.landing_bucket, folder)
-    return len(expired)
-
-
-def healthcheck(settings: Settings) -> dict:
-    """HEAD the index URL (follows the 302 to the CDN). Raises if it doesn't answer 200."""
-    resp = request(settings.index_url, method="HEAD", timeout=30)
-    if resp.status != 200:
-        raise RuntimeError(f"{settings.index_url} answered HTTP {resp.status}")
-    return {"status": "ok", "url": settings.index_url, "etag": resp.headers.get("etag"),
-            "last_modified": resp.headers.get("last-modified")}
-
-
 def safe_id(run_id: str) -> str:
     """Airflow run ids contain ':' and '+'; keep paths and S3 keys plain."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", run_id)
@@ -173,16 +148,12 @@ def snapshot_index(settings: Settings, catalog: RestCatalog, run_id: str) -> dic
     storage.put_file(s3, settings.landing_bucket, folder + "dbinfo.json.gz", dest)
     # The manifest goes last: a folder without it is an incomplete run (DESIGN_PROPOSAL, Ingesta)
     storage.put_bytes(s3, settings.landing_bucket, folder + "_manifest.json", json.dumps(manifest, indent=1).encode())
-    dest.unlink()
-    pruned = _prune_snapshots(s3, settings)
+    dest.unlink()  # old snapshots expire by themselves: RustFS lifecycle rule on px4/index/ (setup.py)
 
-    cat.append(catalog, "audit.index_snapshots", [{
-        **{k: manifest[k] for k in ("etag", "last_modified", "bytes", "records", "sha256")},
-        "landing_key": folder + "dbinfo.json.gz", "run_id": run_id, "fetched_at": audit.now()}])
     audit.record_run(catalog, "index_snapshot", run_id, "success", started, source=manifest["etag"],
                      read=n_records, bytes=resp.bytes_written)
-    log.info("200: %d records, %.1f MB -> s3://%s/%s (pruned %d old snapshots)",
-             n_records, resp.bytes_written / 1e6, settings.landing_bucket, folder, pruned)
+    log.info("200: %d records, %.1f MB -> s3://%s/%s",
+             n_records, resp.bytes_written / 1e6, settings.landing_bucket, folder)
     return {"status": "downloaded", "etag": manifest["etag"], "records": n_records,
             "bytes": resp.bytes_written, "manifest_key": folder + "_manifest.json"}
 

@@ -1,7 +1,7 @@
 """
 ### PX4 transform (dbt via Cosmos)
 
-**Triggered by data, not by the clock:** it runs when any bronze asset gets new data, i.e. when `load_index`, `parse_ulogs` or `backfill_day` finish.
+**Triggered by data, not by the clock:** it runs when any bronze asset gets new data, i.e. when `load_index` or `parse_ulogs` finish.
 
 Steps:
 - `source_freshness`: a stale index (> 48 h) stops the run before anything is published.
@@ -33,7 +33,7 @@ GOLD = Asset("iceberg://px4/gold")
 REPORTS = Asset("s3://reports")
 REPORTS_DIR = "/opt/airflow/work/reports/{{ " + RUN_DAY + " }}"
 
-project = ProjectConfig(dbt_project_path=PROJECT, install_dbt_deps=False)  # airflow-init runs dbt deps
+project = ProjectConfig(dbt_project_path=PROJECT, install_dbt_deps=False)  # the setup job runs dbt deps
 profile = ProfileConfig(profile_name="px4_lakehouse", target_name="dev", profiles_yml_filepath=f"{PROJECT}/profiles.yml")
 # SUBPROCESS: dbt is a separate binary in its own venv; Cosmos' default in-process runner can't use it
 execution = ExecutionConfig(dbt_executable_path=DBT, invocation_mode=InvocationMode.SUBPROCESS)
@@ -46,6 +46,10 @@ def layer(tag: str) -> RenderConfig:
         dbt_executable_path=DBT,
         invocation_mode=InvocationMode.SUBPROCESS,  # render-time `dbt ls` has its own setting
         test_behavior=TestBehavior.AFTER_EACH,  # <model>.run then <model>.test
+        # A test that reads several models (relationships: fct_flight -> dim_vehicle) gets its own task that
+        # waits for ALL of them. Attached to one parent, it raced the other: new vehicles in fct_flight, a
+        # dim_vehicle not rebuilt yet -> 140 false failures (found by the Phase 9 smoke test).
+        should_detach_multiple_parents_tests=True,
         emit_datasets=False,                    # one layer-level asset (GOLD) instead of one per model
     )
 

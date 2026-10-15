@@ -6,7 +6,9 @@
    query-level `ignore:` doesn't suppress it in `validate`. Queries without them DO get the
    offline column-vs-model check (ERR-DBT-MODEL-COLUMN-MISSING).
 2. `dct render --format text` on every board: runs every query against Trino, so a query the
-   offline check had to skip is still verified. Any WARN-/ERR- code in the output fails.
+   offline check had to skip is still verified. Any ERR- code, or a WARN- code that doesn't depend on
+   how much data there is, fails. Data-dependent warnings (an empty chart in a young environment) are
+   reported but don't block: the smoke test asserts the data itself.
 
     python check_charts.py [--dct /opt/charts-venv/bin/dct] [--project-dir /opt/dbt]
 """
@@ -21,6 +23,8 @@ import sys
 from pathlib import Path
 
 UNCHECKABLE_OFFLINE = {"WARN-DBT-QUERY-COLUMNS-INDETERMINATE"}
+# Depend on the data volume, not on the board's correctness (seen on a fresh clone with ~40 parsed logs)
+DATA_DEPENDENT = {"WARN-QUERY-RETURNED-ZERO-ROWS", "WARN-Y-ENCODING-MOSTLY-NULL", "WARN-BAR-GROUPED-SERIES-COINCIDE"}
 CODE = re.compile(r"\b((?:WARN|ERR)-[A-Z0-9-]+)")
 
 
@@ -49,11 +53,14 @@ def main() -> int:
 
         r = run([args.dct, "render", rel, "--format", "text"], args.project_dir)
         render_codes = sorted(set(CODE.findall(r.stdout + r.stderr)))
+        render_blocking = [c for c in render_codes if c not in DATA_DEPENDENT]
+        render_notes = [c for c in render_codes if c in DATA_DEPENDENT]
 
-        ok = not blocking and not render_codes and r.returncode == 0
+        ok = not blocking and not render_blocking and r.returncode == 0
         failed |= not ok
         print(f"{'OK  ' if ok else 'FAIL'} {rel}: {len(findings) - skipped} validate findings, "
-              f"{skipped} queries checked by execution only, render codes: {render_codes or 'none'}")
+              f"{skipped} queries checked by execution only, render codes: {render_blocking or 'none'}"
+              + (f" (data-dependent, not blocking: {render_notes})" if render_notes else ""))
         for f in blocking:
             print(f"      {f.get('code')}: {f.get('message', '')[:200]}")
         if r.returncode != 0:

@@ -1,4 +1,4 @@
-# AWS CLI config for talking to RustFS: path-style URLs (http://rustfs:9000/<bucket>/<key>),
+# AWS CLI config for the on-demand `aws` service (make s3): path-style URLs (http://rustfs:9000/<bucket>/<key>),
 # because virtual-host style (<bucket>.rustfs) can't resolve inside the compose network.
 [default]
 s3 =

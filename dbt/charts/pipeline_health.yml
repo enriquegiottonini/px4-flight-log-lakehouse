@@ -16,10 +16,10 @@ queries:
     FROM {{ ref('mart_pipeline_runs') }} AS p
     WHERE p.entity = 'logs_index' AND p.status = 'success'
   ulogs_by_day: |
-    SELECT CAST(p.started_at AS date) AS day, p.entity AS step, sum(p.records_inserted) AS ulogs
+    SELECT CAST(p.started_at AS date) AS day, sum(p.records_inserted) AS ulogs
     FROM {{ ref('mart_pipeline_runs') }} AS p
-    WHERE p.entity IN ('ulog_fetch', 'ulog_parse')
-    GROUP BY 1, 2 ORDER BY 1, 2
+    WHERE p.entity = 'ulog_parse'
+    GROUP BY 1 ORDER BY 1
   recent_runs: |
     SELECT p.started_at, p.entity, p.status, p.records_read, p.records_inserted, p.records_rejected,
            p.duration_s, p.run_id
@@ -53,16 +53,15 @@ charts:
     value: ulog_mb
     style: {value: {format: integer}}
   ulogs:
-    title: ULog files fetched and parsed per day
-    subtitle: Capped by PX4_MAX_ULOGS_PER_RUN in this environment; a full day is ~500 logs.
+    title: ULog files parsed per day
+    subtitle: Every fetched file is parsed, so one series. Capped by PX4_MAX_ULOGS_PER_RUN; a full day is ~500 logs.
     query: ulogs_by_day
     type: bar
     x: day
     y: ulogs
-    color: step
     x_label: Day
     y_label: ULog files
-    style: {orientation: vertical, stack: none, number_format: ",.0f"}
+    style: {orientation: vertical, number_format: ",.0f"}
   runs:
     title: Last 20 runs
     query: recent_runs

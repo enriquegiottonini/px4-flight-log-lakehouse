@@ -24,7 +24,7 @@ This file is the project's **build plan** and the **working rules** for Claude C
 | Data acquisition via an API ("API-Ubuntu" container in the example) | The `drone_ingest` package, inside the Airflow image, consumes the public PX4 Flight Review API (`dbinfo` index + ULog files). See D-001. |
 | Storage in a DBMS | Apache Iceberg tables on RustFS (S3), catalogued by **Lakekeeper** (Iceberg REST catalog) whose state lives in **PostgreSQL**; Trino is the SQL engine. |
 | Visualization (Dash suggested) | dbt Charts (`dct serve`) over the gold tables via Trino. |
-| Containerization (≥ 2 containers) | Docker Compose with ~13 services (section 5). |
+| Containerization (≥ 2 containers) | Docker Compose with 8 containers: 6 services + 2 one-shot jobs (section 5). |
 | Integration API → DB → visualization | Airflow DAGs chained by *assets*; `infrastructure/scripts/smoke_test.sh` checks the full flow. |
 | Class presentation | Script and checklist in Phase 9. |
 
@@ -120,26 +120,26 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 | Events | `/events` | `logged_messages` inside the ULog (level + text) | D-004 |
 | Drone catalog | `/v1/drones` | Derived from `vehicle_uuid` + `sys_hw` + `airframe_*` + `ver_sw_release`, with SCD2 via a snapshot | D-005 |
 | Weather / battery in the index | Assumed | Not present. `wind_speed` is almost always empty; battery comes only from ULog. Marts that depended on them are dropped. | D-002 |
-| Iceberg catalog | JDBC catalog inside Postgres (Lakekeeper explicitly discarded) | **Lakekeeper** REST catalog (`v0.14.0`; fallback `v0.13.6`) backed by a `lakekeeper` Postgres db. Gives a standard REST API that Trino, PyIceberg and any other engine share, a web UI at `:8181/ui`, and warehouse/namespace management. Costs: +3 services (migrate, serve, bootstrap) and a young 0.x project. | D-007 |
+| Iceberg catalog | JDBC catalog inside Postgres (Lakekeeper explicitly discarded) | **Lakekeeper** REST catalog (`v0.14.0`; fallback `v0.13.6`) backed by a `lakekeeper` Postgres db. Gives a standard REST API that Trino, PyIceberg and any other engine share, a web UI at `:8181/ui`, and warehouse/namespace management. Costs: +3 services (migrate, serve, bootstrap; 2 since Phase 10) and a young 0.x project. | D-007 |
 | Fixtures | Invented JSON | Real `dbinfo` excerpt (200 records) + 3 small real ULogs + synthetic corrupt cases | D-006 |
 | Open questions | Auth / rate limits | Resolved: no auth; rate limit only on `/download`; we use the CDN | — |
 
 **Daily index diff (D-003).** Each daily file is yesterday's file plus ~500–600 new logs, and occasionally an edited one (e.g. a `rating` added later):
-1. **Conditional GET**: send the last stored ETag (`audit.index_snapshots`) as `If-None-Match`. A 304 ends the run as "no new data" and downloads 0 bytes.
-2. **Landing keeps the raw gz** for audit, but only the last `INDEX_SNAPSHOT_RETENTION=7` snapshots (~225 MB).
+1. **Conditional GET**: send the ETag of the newest successfully loaded snapshot (`audit.ingestion_runs`) as `If-None-Match`. A 304 ends the run as "no new data" and downloads 0 bytes.
+2. **Landing keeps the raw gz** for audit; a RustFS lifecycle rule expires snapshots after 7 days (~225 MB; Phase 10).
 3. **Bronze is append-only and stores only changes**: compute `payload_hash = sha256(canonical JSON)` per record and anti-join against bronze's latest hash per `log_id`. Insert rows that are **new** (`_change_type='insert'`) or **changed** (`_change_type='update'`). Bronze grows by ~500 rows/day instead of 476k, and keeps each log's metadata history.
 4. **First run (bootstrap)** inserts only records with `log_date >= INDEX_START_DATE` (default `2025-01-01`, ~200k rows, a few seconds). Widening the window later just re-diffs.
 5. **ULogs** are fetched once per `log_id` (anti-join with `audit.ulog_downloads`). Their window is **one full UTC day of uploads, `[ULOG_START_DATE, ULOG_END_DATE)`**, default `[today − 1, today)` (D-004). It's independent of the index window. Because `log_date` is the upload date, new `log_id`s always appear under recent dates.
 
 **Disk budget (D-004), measured in Phase 1** (`explore/reports/ulog_sizes.md`): ~512 logs/day × **18 MB mean** ≈ **9.3 GB/day** of raw ULog.
 - A 7-day window would be ≈ 65 GB, but the development machine has ~13 GiB free. **Decision (D-004, revised): keep raw ULogs for a 1-day window only.**
-- Window `[today − 1, today)` and `ULOG_RETENTION_DAYS=1`: landing holds at most one day of `.ulg` files (~9–10 GB). With `log_date >= today − 1`, today's partial uploads would also be fetched, so ~1.4 days would coexist.
-- **Purge before fetch:** `purge_expired_ulogs` runs *before* the day's downloads, so two days never coexist (that would be ~18 GB).
+- Window `[today − 1, today)`, and a RustFS lifecycle rule expires `landing/px4/ulog/` objects after 1 day (Phase 10; until then, `ULOG_RETENTION_DAYS=1` and a purge task): landing holds about one day of `.ulg` files (~9–10 GB). With `log_date >= today − 1`, today's partial uploads would also be fetched, so ~1.4 days would coexist.
+- **Expiry is asynchronous:** RustFS's scanner deletes expired objects in the background, so two days can briefly coexist (~18 GB). The guard below is the safety net. (Phases 4–9 purged *before* each day's downloads instead.)
 - **Free-disk guard:** before each batch, `fetch-ulogs` checks free space on the RustFS volume. It aborts with a clear error if free space minus the batch's summed `Content-Length` would drop below `MIN_FREE_DISK_GB=3`.
-- **Backfill** processes one day at a time and purges between days, so the peak never exceeds one day.
+- **Re-processing a past day** is one `px4_ingest_daily` run with the `day` param (Phase 10; the backfill DAG it replaced looped over days).
 - Parsed telemetry lives in Iceberg and is **not** purged: ~40–90 rows per log at 1 Hz ≈ 40k rows/day, so telemetry history keeps growing even though raw files rotate.
 - Docker Desktop keeps volumes inside its VM disk image (Settings → Resources → disk limit). It must allow ≥ 20 GB.
-- Knobs: `ULOG_START_DATE`, `ULOG_END_DATE`, `ULOG_RETENTION_DAYS`, `MIN_FREE_DISK_GB`, `ULOG_MAX_BYTES` (larger logs → `rejected`, reason `too_large`), `MAX_ULOGS_PER_RUN` (empty = all; useful during development).
+- Knobs: `ULOG_START_DATE`, `ULOG_END_DATE`, `MIN_FREE_DISK_GB`, `ULOG_MAX_BYTES` (larger logs → `rejected`, reason `too_large`), `MAX_ULOGS_PER_RUN` (empty = all; useful during development).
 
 ## 5. Architecture and services
 
@@ -147,7 +147,7 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
  PX4 Flight Review (dbinfo.json.gz, *.ulg)
           │  HTTP (drone_ingest, inside Airflow)
           ▼
- ┌────────────── Airflow 3 (apiserver, scheduler, dag-processor) ──────────────┐
+ ┌────────────── Airflow 3 (`airflow standalone`, one container) ──────────────┐
  │ px4_ingest_daily ──asset bronze.*──▶ px4_transform (Cosmos: dbt silver/gold)  │
  └───────┬───────────────────────────────────────┬─────────────────────────────┘
          │ S3 (boto3) / PyIceberg                │ SQL (dbt-trino)
@@ -160,14 +160,14 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
          └──────────── PostgreSQL (dbs: airflow, lakekeeper) ◀┘
 ```
 
-**Catalog wiring (Lakekeeper):**
-- `lakekeeper-migrate` (`migrate`) creates the schema in the `lakekeeper` db, then `lakekeeper` (`serve`, port 8181) starts.
-- `lakekeeper-bootstrap` (curl image, run once: `infrastructure/lakekeeper/bootstrap.sh`) does two POSTs:
+**One-shot setup (Phase 10, `infrastructure/setup/setup.py`):** the `setup` container (Airflow image, `/opt/ingest-venv/bin/python`) configures everything once, idempotently, through each tool's own API, then runs `dbt deps` + `dbt parse`:
+- **RustFS (boto3):** buckets `landing`, `lakehouse`, `reports`; **lifecycle rules** `landing/px4/ulog/` → 1 day, `landing/px4/index/` → 7 days, `reports/` → 30 days (RustFS's scanner deletes expired objects); the read-only CORS rule on `lakehouse` for the UI.
+- **Lakekeeper (management API):**
   - `POST /management/v1/bootstrap` with `{"accept-terms-of-use": true}` → `204`. A later call → `400 CatalogAlreadyBootstrapped`, treated as success.
-  - `POST /management/v1/warehouse` → `201`, skipped if `px4` already exists. Body: warehouse `px4`, `storage-profile` `{type: s3, bucket: lakehouse, endpoint: http://rustfs.localhost:9000, region: us-east-1, path-style-access: true, flavor: s3-compat, sts-enabled: true, sts-endpoint: <same>, remote-signing-enabled: false}` and an access-key `storage-credential`.
-  - The JSON is built in the script from env vars, so no S3 secret is committed. `project-id` is deprecated in v0.14 and omitted (the default project is used).
-  - Lakekeeper validates the storage on creation (writes and deletes a test object), so a `201` proves Lakekeeper → RustFS works.
-- `trino-init` (Trino CLI, run once: `infrastructure/trino/init/init-schemas.sql`) creates `bronze`, `silver`, `gold` and `audit` with **explicit locations** `s3://lakehouse/<layer>`. Otherwise Lakekeeper defaults every namespace to the warehouse root, and tables from all layers would end up side by side.
+  - `POST /management/v1/warehouse` → `201`, skipped if `px4` already exists. Body: warehouse `px4`, `storage-profile` `{type: s3, bucket: lakehouse, endpoint: http://rustfs.localhost:9000, region: us-east-1, path-style-access: true, flavor: s3-compat, sts-enabled: true, sts-endpoint: <same>, remote-signing-enabled: false}`, an access-key `storage-credential` (from env vars, nothing committed) and **`delete-profile: {type: soft, expiration-seconds: 604800}`**. An existing warehouse gets the profile via `POST …/warehouse/{id}/delete-profile`.
+  - `project-id` is deprecated in v0.14 and omitted (the default project is used). Lakekeeper validates the storage on creation (writes and deletes a test object), so a `201` proves Lakekeeper → RustFS works.
+- **Namespaces (PyIceberg):** `bronze`, `silver`, `gold`, `audit` with **explicit locations** `s3://lakehouse/<layer>`. Otherwise Lakekeeper defaults every namespace to the warehouse root, and tables from all layers would end up side by side.
+- `lakekeeper-migrate` (`migrate`) stays a separate job: the distroless image's `serve` has no migrate flag.
 - Secrets in `.env`: `LAKEKEEPER_ENCRYPTION_KEY` (→ `LAKEKEEPER__PG_ENCRYPTION_KEY`; keep it stable, it decrypts the stored S3 keys) and `LAKEKEEPER_DB_PASSWORD` (→ `LAKEKEEPER__PG_DATABASE_URL_READ` / `_WRITE`).
 - No OIDC: auth is disabled (local toy), in line with the proposal's "no auth" non-goal.
   - The startup log warning is filtered with `RUST_LOG=info,lakekeeper::service::authn=error`.
@@ -175,7 +175,7 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 - **STS / vended credentials are on** (D-007, revised), so the web UI's **LoQE** (Local Query Engine, DuckDB-WASM in the browser) can read tables, e.g. the table PREVIEW tab:
   - RustFS supports STS `AssumeRole`. Lakekeeper vends short-lived keys + session token, scoped to the table's prefix.
   - **Endpoint `http://rustfs.localhost:9000`** works in both places: containers resolve it through a compose network alias on `rustfs`, and browsers (Chrome/Firefox) resolve `*.localhost` to 127.0.0.1 → published port 9000.
-  - **CORS:** `rustfs-init` puts a read-only (GET/HEAD) CORS rule on `s3://lakehouse` for `http://localhost:8181` / `http://127.0.0.1:8181`.
+  - **CORS:** `setup` puts a read-only (GET/HEAD) CORS rule on `s3://lakehouse` for `http://localhost:8181` / `http://127.0.0.1:8181`.
   - **Server-side engines don't use vended credentials.**
     - Trino has `vended-credentials-enabled=false`.
     - PyIceberg sends `X-Iceberg-Access-Delegation: client-managed` and replaces each table's FileIO with its own endpoint and keys (`drone_ingest.catalog.load_table`).
@@ -208,18 +208,19 @@ catalog = RestCatalog("px4", uri="http://lakekeeper:8181/catalog", warehouse="px
                          "s3.access-key-id": ..., "s3.secret-access-key": ..., "s3.region": "us-east-1"})
 ```
 
-| Service | Image (pinned tag in `.env`) | Host port | Introduced in |
+| Container | Image (pinned tag in `.env`) | Host port | Introduced in |
 | --- | --- | --- | --- |
 | `postgres` | `postgres:17.11` | 5432 | Phase 2 |
 | `rustfs` | `rustfs/rustfs:1.0.1` | 9000 API, 9001 console | Phase 2 |
-| `rustfs-init` | `amazon/aws-cli:2.37.13` (creates buckets) | — | Phase 2 |
-| `lakekeeper-migrate` | `quay.io/lakekeeper/catalog:v0.14.0` (`migrate`) | — | Phase 3 |
+| `lakekeeper-migrate` | `quay.io/lakekeeper/catalog:v0.14.0` (`migrate`, one-shot) | — | Phase 3 |
 | `lakekeeper` | `quay.io/lakekeeper/catalog:v0.14.0` (`serve`) | 8181 (REST + UI) | Phase 3 |
-| `lakekeeper-bootstrap` | `curlimages/curl:8.22.0` (bootstrap + warehouse) | — | Phase 3 |
+| `setup` | Airflow image (`setup.py` + `dbt deps/parse`, one-shot) | — | Phase 10 (replaces `rustfs-init`, `lakekeeper-bootstrap`, `trino-init`, `airflow-init`) |
 | `trino` | `trinodb/trino:483` (`mem_limit: 3g`, heap 2 GB) | 8085 | Phase 3 |
-| `trino-init` | `trinodb/trino:483` (CLI; creates the schemas) | — | Phase 3 |
-| `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` (image 4.1 GB) | 8080 | Phase 5 |
+| `airflow` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` (image 4.1 GB); `airflow standalone` | 8080 | Phase 5 (one container since Phase 10) |
 | `charts` | same image as Airflow; `dct serve` from `/opt/charts-venv` (`dbt-charts[trino,server]==0.9.1`) | 8088 | Phase 8 |
+| `aws` (profile `tools`, on demand) | `amazon/aws-cli:2.37.13` (`make s3`, `make lifecycle`) | — | Phase 10 |
+
+Start order (every one-shot job is a `service_completed_successfully` dependency, so `docker compose up --wait` checks its exit code): postgres → lakekeeper-migrate → lakekeeper → setup (+ rustfs) → trino → airflow, charts.
 
 Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astronomer-cosmos==1.15.1`, `dbt-trino==1.10.6`, `pyiceberg==0.12.0`, `pyulog==1.2.4`, `dbt-charts==0.9.1` (needs Python 3.10–3.13).
 
@@ -234,7 +235,6 @@ Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astro
 - `bronze.telemetry_raw`: `log_id`, `t_boot_s`, `ts_utc` (nullable: needs a GPS fix), `lat`, `lon`, `alt_m`, `vx`, `vy`, `vz`, `battery_remaining`, `battery_voltage_v`, `battery_current_a`, `nav_state`, `arming_state`, plus metadata. Partitioned by `_log_date` (the upload date, always present). Built from `vehicle_global_position`, `vehicle_local_position`, `battery_status` and `vehicle_status`, averaged per second.
 - `bronze.log_messages_raw`: `log_id`, `ts`, `level`, `message`.
 - `bronze.rejected_records`: `entity`, `log_id`, `reason` (`missing_<field>` / `invalid_<field>` / `not_an_object` / `duplicate_log_id_in_snapshot`), `detail`, `raw`, `_run_id`, `_rejected_at`.
-- `audit.index_snapshots`: `etag`, `last_modified`, `bytes`, `records`, `sha256`, `landing_key`, `run_id`, `fetched_at`.
 - `If-None-Match` uses the ETag of the newest snapshot that was **successfully loaded** (from `audit.ingestion_runs`), not just downloaded. A run that downloaded but failed to load is therefore retried next time.
 - `audit.ingestion_runs`: entity, date, run_id, read, loaded, rejected, bytes, duration.
 - `audit.ulog_downloads`: append-only event log (`log_id`, `log_date`, `status`, `reason`, `bytes`, `sha256`, `landing_key`, `telemetry_rows`, `message_rows`, `run_id`, `event_at`). A log's current status is its latest event:
@@ -277,7 +277,10 @@ Evolution of `docker compose config --services`:
 | `phase-2` | `postgres`, `rustfs`, `rustfs-init` |
 | `phase-3` | + `lakekeeper-migrate`, `lakekeeper`, `lakekeeper-bootstrap`, `trino`, `trino-init` |
 | `phase-5` | + 4 Airflow services |
-| `phase-8` | + `charts` |
+| `phase-8` | + `charts` (13 containers) |
+| `phase-10` | − `rustfs-init`, `lakekeeper-bootstrap`, `trino-init`, 4 Airflow services; + `setup`, `airflow` (8 containers) |
+
+Phases 2–9 describe the stack as it was at their tag; Phase 10 simplified it (D-010).
 
 ### Phase 1: Explore the source (no Docker)
 **Introduces:** the real API contract, the ULog format and `pyulog`. Fixtures are produced here.
@@ -531,6 +534,7 @@ Findings and gotchas:
 - **Selecting by path vs tag:** `-s silver` selects by path and misses the snapshot, which lives in `snapshots/`. Use `-s tag:silver` or plain `dbt build`.
 - **`require_certificate_validation` is a dbt-trino behavior flag** (`flags:` in `dbt_project.yml`), not a profile key.
 - **The SCD2 snapshot starts now:** `snap_vehicles` has one version per vehicle (26,470) until a later run sees a vehicle's hardware, airframe or firmware change. The same applies to the MERGE update path in `stg_logs`: it shows up when tomorrow's index re-rates a log.
+- **Incremental filters must survive an empty target** (found in Phase 9): `_ingested_at > (select max(_ingested_at) from this)` is `> NULL` on an empty table, so it inserts nothing, forever. All three incremental models now use `coalesce(max(...), timestamp '1970-01-01 00:00:00 UTC')`.
 - **Snapshots hold history that can't be rebuilt.** The drop-and-rebuild test dropped `snap_vehicles` too, which is fine now; later, don't drop snapshot tables.
 
 ```bash
@@ -576,6 +580,8 @@ Checklist:
 
 Findings and gotchas:
 - **`RenderConfig` has its own `invocation_mode`** (for the parse-time `dbt ls`). Setting it only on `ExecutionConfig` still fails with "…not the same as the system dbt executable path".
+- **Multi-parent tests race in Cosmos** (found in Phase 9): with `AFTER_EACH`, a relationships test is attached to one parent, so `fct_flight → dim_vehicle` ran before `dim_vehicle` was rebuilt (140 false failures when new vehicles arrived). Fixed with `should_detach_multiple_parents_tests=True`: such tests become their own task after all their parents (49 tasks now).
+- **Asset events collapse:** events that arrive while an asset-triggered run is *queued* are merged into it. Only events that existed when the run was created are listed as "consumed". dbt reads bronze when it runs, so the data is covered either way.
 - **Asset events that happen while a DAG is paused don't queue a run:** unpausing `px4_transform` started nothing until the next bronze update.
 - **DAG states left after Phase 7:** `px4_transform` is **unpaused**, which is how it's meant to run; the ingestion, backfill and maintenance DAGs stay paused.
 
@@ -634,15 +640,98 @@ make s3 ARGS="ls --recursive s3://reports/"
 ```
 
 ### Phase 9: Integration and presentation
-- [ ] `infrastructure/scripts/smoke_test.sh`: from a clean clone, `cp .env.example .env && make up`, trigger ingestion with `MAX_ULOGS_PER_RUN=20`, wait for the transform, check gold counts and that the report exists. Must exit 0.
-- [ ] `README.md` with startup steps, ports and the diagram.
-- [ ] Presentation script (~7 min), mapped to `task.txt`:
-  - [ ] Problem statement (section 3).
-  - [ ] API: `dbinfo` + ULog, volume and defects.
-  - [ ] Architecture and the role of each container (section 5).
-  - [ ] DB design: landing → bronze → silver → gold (section 6), with a diagram of `fct_flight` and its dimensions.
-  - [ ] Live demo: trigger the DAG → files in RustFS → `SELECT` in Trino → refreshed board.
-- [ ] Demo plan B: preloaded data + screenshots, in case the classroom network fails.
+**Introduces:** an end-to-end smoke test from a clean clone, the README, the class presentation.
+
+Checklist:
+- [x] `infrastructure/scripts/smoke_test.sh` steps:
+  - `make env` if `.env` is missing; it refuses to run if `PX4_MAX_ULOGS_PER_RUN` is empty.
+  - `make up`.
+  - Unpause `px4_ingest_daily` + `px4_transform`, and trigger a capped ingestion (`SMOKE_MAX_ULOGS`, default 20).
+  - Wait for a transform run that started after the ingestion ended, and require **every** transform run in that window to pass.
+  - Check that gold is non-empty, **silver telemetry/messages = bronze**, and all 8 reports are in `s3://reports/<day>/`.
+  - **PASSED from a clean clone in 306 s.** The clone ran as a separate Compose project (`COMPOSE_PROJECT_NAME=px4-smoke`) with empty volumes. The main stack was stopped with `make down` (volumes kept), then restored.
+  - `cp .env.example .env` (the original plan) doesn't work: `change-me-fernet` isn't a valid Fernet key, so the script uses `make env`.
+- [x] `README.md`: what it is, architecture diagram, services and ports, quick start, pipeline, commands, configuration, smoke test (incl. the clean-clone procedure), troubleshooting.
+- [x] Presentation script `presentation/guion.md` (Spanish, ~7 min, one block per `task.txt` item):
+  - [x] Problem statement.
+  - [x] API: `dbinfo` + ULog, volume and defects.
+  - [x] Architecture and the role of each container.
+  - [x] DB design: landing → bronze → silver → gold, with a Mermaid ER diagram of `fct_flight` and its dimensions.
+  - [x] Live demo: trigger the DAG → files in RustFS → `SELECT` in Trino → auto-triggered transform → refreshed board.
+  - Plus a pre-class checklist.
+- [x] Demo plan B in `presentation/plan_b/`:
+  - The 4 board PDFs from the latest published reports.
+  - `consultas.md` with key query results (rows per layer, logs/hours by class, multirotor modes, firmware, top messages, Iceberg snapshots).
+  - Without internet, skip ingestion and trigger `px4_transform`: everything after the API is local.
+
+**What the clean clone found** (a stack that had grown up incrementally hid all of these):
+1. **An incremental model never inserted anything once built empty.** On a fresh database the first transform run (triggered by `load_index`) built `stg_telemetry` before any ULog was parsed, so it was empty, and `> NULL` excluded every later row. Silver showed 0 flights with telemetry. Fixed with `coalesce` (Phase 6 gotchas). The smoke test now asserts silver = bronze.
+2. **A Cosmos multi-parent test raced its second parent:** 140 false relationship failures. Fixed by detaching such tests (Phase 7 gotchas). The smoke test now fails if *any* transform run fails: a failure followed by a success had been masked.
+3. **The charts gate was too strict for a young environment.** Zero-row charts and coinciding bar series depend on data volume, so `check_charts.py` now reports `WARN-QUERY-RETURNED-ZERO-ROWS`, `WARN-Y-ENCODING-MOSTLY-NULL` and `WARN-BAR-GROUPED-SERIES-COINCIDE` without blocking. The data itself is asserted by the smoke test. `pipeline_health` now charts parsed ULogs only, since fetch always equals parse.
+4. **Waiting for "the" transform run is subtle** (asset events collapse into queued runs). The smoke test waits for a run that started after the ingestion ended.
+5. **Unpausing `px4_ingest_daily` on a fresh database runs the missed 02:00 slot with the default cap.** Hence the script's cap guard.
+
+```bash
+infrastructure/scripts/smoke_test.sh                     # against this checkout (needs PX4_MAX_ULOGS_PER_RUN set)
+SMOKE_MAX_ULOGS=5 infrastructure/scripts/smoke_test.sh
+# clean clone: see README → "Smoke test"
+open presentation/guion.md presentation/plan_b/
+```
+
+### Phase 10: Simplification (native features over custom jobs)
+**Introduces:** 8 containers instead of 13, one idempotent `setup` job, `airflow standalone`, RustFS lifecycle rules, Lakekeeper soft delete, and dbt tables replaced in place (Iceberg history across runs). See D-010.
+
+Checklist:
+- [x] `infrastructure/setup/setup.py` (section 5): buckets + **lifecycle rules** + CORS; Lakekeeper bootstrap + warehouse with **soft delete (7 days)**; namespaces. The `setup` container then runs `dbt deps` + `dbt parse`. A re-run changes nothing (`warehouse exists`).
+- [x] Compose:
+  - `airflow standalone` replaces `airflow-init`, `-apiserver`, `-scheduler`, `-dag-processor`; `setup` replaces `rustfs-init`, `lakekeeper-bootstrap`, `trino-init`.
+  - An `aws` CLI service under the `tools` profile, only for `make s3` / `make lifecycle`.
+  - `make up` = `up -d --wait --remove-orphans`: no wait script, and the old containers are removed on the first run.
+- [x] `drone_ingest`: removed `purge-ulogs`, `run-ulogs`, `healthcheck`, snapshot pruning, `audit.index_snapshots` and two unused storage helpers. `make test`: 20 passed.
+- [x] DAGs:
+  - `px4_backfill` deleted; `px4_ingest_daily` has a **`day`** param instead (`{"day": "2026-10-10"}` → window `[day, day+1)`).
+  - The `api_healthcheck` and `purge_expired_ulogs` tasks are gone.
+  - The `px4_pool` pool is replaced by `max_active_tis_per_dagrun=4`.
+  - The stale DAG and pool were removed from the metadata DB (`airflow dags delete px4_backfill`, `airflow pools delete px4_pool`).
+- [x] dbt:
+  - `+on_table_exists: replace` → `CREATE OR REPLACE TABLE`.
+  - `macros/reset_csv_table.sql`: seeds truncate + insert, which is dbt-core's default; dbt-trino always drops.
+- [x] `make trino SQL=…` passes the statement verbatim, so `"<table>$snapshots"` works.
+- [x] Migrated the running stack with no data loss: `make up` → 8 containers in 22 s. DAG history and pause states were kept. `audit.index_snapshots` was dropped (soft-deleted, restorable until 2026-10-22).
+- [x] Verified:
+  - **Lifecycle:** `make lifecycle` lists the 3 rules. In a scratch bucket, a rule with a past date removed its object *from disk* within seconds, and an object outside the rule's prefix stayed.
+  - **Soft delete:** a `DROP TABLE` shows up in `deleted-tabulars` with an expiration date. Undrop via the API and via the UI (namespace → Deleted → Restore) returns the same rows. Rehearsed on `gold.mart_flight_envelope`, then `make charts-check` → 4× OK.
+  - **Table history:** three dbt builds, 81/81 each. The gold table kept its identity (6 snapshots), and `FOR VERSION AS OF <first snapshot>` reads the oldest version.
+  - **Pipeline:**
+    - `{"max_ulogs": 3}`: the index answered 304, so `load_index` was skipped; 3 ULogs were fetched and parsed. `px4_transform` auto-ran (1 m 49 s), published 8 reports, and charts-check gave 4× OK.
+    - `{"day": "2026-10-10", "max_ulogs": 2}`: window `[2026-10-10, 2026-10-11)`, 2 ULogs fetched and parsed.
+- [x] Smoke test from a clean copy of the working tree (separate project `px4-smoke`, empty volumes): **PASSED in 279 s** (Phase 9: 306 s). All 8 containers came up from zero in ~35 s, both asset-triggered transform runs succeeded, silver = bronze, and the 8 reports were published. The smoke project was then deleted (`down -v`), and the main stack restored with its data and DAG states.
+
+**Findings and gotchas:**
+1. **Namespace protection protects nothing here.**
+   - Trino refuses `DROP SCHEMA` on a non-empty schema by itself.
+   - `DROP SCHEMA … CASCADE` drops every table first. The tables were soft-deleted, so the namespace then counted as "not empty"; the protection check never ran.
+   - *Table* protection does work: `DROP TABLE` is refused, including through CASCADE, and `CREATE OR REPLACE` still succeeds and adds a snapshot.
+   - Gold tables don't exist yet when `setup` runs on a clean clone, so protection stays a hands-on UI demo (table → Settings → protection) and is not set by `setup`.
+2. **Soft delete makes every DROP visible**, including the ones dbt does internally.
+   - Before the changes, one build soft-deleted the 6 seeds (dbt-trino drops and recreates them), 3 incremental `__dbt_tmp` views and the snapshot's temp table.
+   - The old drop-and-rename materialization would have added one backup table per table model.
+   - After the changes, each build leaves only the 4 temp objects. They are metadata only or tiny, live in `silver`, and expire after 7 days.
+3. **Undrop body:** `{"targets": [{"type": "table", "id": "<uuid>"}]}`. A bare UUID → 422.
+4. **`aws s3api … --output table` hides a rule whose prefix is empty** (the whole bucket), so `make lifecycle` uses a `--query` with text output.
+5. **Smoke-test race.** Airflow stamps a DAG run's `end_date` *after* its last task finishes, and an idle `px4_transform` can start in between (seen: 134 ms earlier). The waiter now anchors on the ingestion's last task `end_date`. Phase 9 passed only because there the transform had been queued.
+6. **`airflow standalone`** runs every component in one container, so the execution API URL is `http://localhost:8080/execution/`. A removed DAG file leaves the DAG listed in the DB until `airflow dags delete`.
+7. **`docker compose up --wait` accepts an exited one-shot job only if a service depends on it with `service_completed_successfully`.** Every job here is such a dependency, so the `wait-init.sh` script is gone.
+
+```bash
+make ps                                   # 8 containers: 6 healthy + setup, lakekeeper-migrate Exited (0)
+make lifecycle                            # RustFS rules: px4/ulog 1 d, px4/index 7 d, reports 30 d
+docker compose run --rm --no-deps setup   # idempotent re-run
+make trino SQL='SELECT snapshot_id, committed_at FROM gold."mart_flights_by_class_month$snapshots"'
+curl -s localhost:8181/management/v1/warehouse | python3 -m json.tool | grep -A3 delete-profile
+# Airflow UI → px4_ingest_daily → Trigger → day = 2026-10-10 (re-processes that upload day)
+# Lakekeeper UI → px4 → <namespace> → Deleted → Restore; table → Versioning; table → Settings → protection
+```
 
 ## 8. Repository layout
 
@@ -652,17 +741,17 @@ make s3 ARGS="ls --recursive s3://reports/"
 ├── Makefile  .env.example       # entry points: `make up`; .env sets COMPOSE_FILE and secrets
 ├── definition/                  # assignment + instructor example (do not modify)
 ├── infrastructure/              # everything that runs the platform (no business logic)
-│   ├── docker-compose.yml       # relative paths resolve from this folder
+│   ├── docker-compose.yml       # 8 containers; relative paths resolve from this folder
 │   ├── postgres/init/           # creates the airflow and lakekeeper roles + databases
-│   ├── rustfs/                  # bucket init script + AWS CLI path-style config
-│   ├── lakekeeper/bootstrap.sh  # bootstrap + warehouse px4 (JSON built from env vars)
-│   ├── trino/{etc,catalog,init}/  # server config, catalogs (iceberg, tpch), schema init SQL
-│   ├── airflow/Dockerfile       # Airflow + drone_ingest + dbt venv (build context: repo root)
-│   └── scripts/{wait-init.sh,check_charts.py,smoke_test.sh}
+│   ├── setup/                   # setup.py (one-shot configuration) + aws-config (path-style, for the aws CLI)
+│   ├── trino/{etc,catalog}/     # server config, catalogs (iceberg, tpch)
+│   ├── airflow/Dockerfile       # Airflow + drone_ingest/dbt/charts venvs (build context: repo root)
+│   └── scripts/{check_charts.py,smoke_test.sh}
 ├── explore/                     # Phase 1 profiling scripts and reports
 ├── ingest/                      # drone_ingest package: src/drone_ingest/{config,http,storage,catalog,schemas,index,ulog,audit,cli}.py, tests/
-├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_backfill, px4_maintenance (+ px4_common helpers)
-└── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/  # + dbt_charts.yml (dct project config)
+├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_transform, px4_maintenance (+ px4_common helpers)
+├── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/  # + dbt_charts.yml (dct project config)
+└── presentation/                # class script (Spanish) + plan B reports
 ```
 
 Rule: files that configure, build or run services go in `infrastructure/`. Code that moves or transforms data (`ingest/`, `dags/`, `dbt/`) stays at the root.
@@ -671,7 +760,7 @@ Rule: files that configure, build or run services go in `infrastructure/`. Code 
 
 - **Lakekeeper is 0.x**: pinned to `v0.14.0` (released 2026-10-07), with `v0.13.6` as the fallback. Trino 483 ↔ Lakekeeper is verified (Phase 3). PyIceberg 0.12 writing tables that Trino reads is verified (Phase 4).
 - **RustFS + Lakekeeper STS**: verified (Phase 3). The browser path depends on `*.localhost` resolving to 127.0.0.1, which Chrome and Firefox do. Other browsers may need a `/etc/hosts` entry `127.0.0.1 rustfs.localhost`.
-- **Disk usage from full ULog**: ~9.3 GB/day of raw ULog. Free space has swung between 9 and 30 GiB during the build; images now take ~12.8 GB (the Airflow image is 4.1 GB). Mitigated by the 1-day raw window, purge-before-fetch, the `MIN_FREE_DISK_GB` guard, and `PX4_MAX_ULOGS_PER_RUN` in `.env` (the local `.env` currently caps at 25/day; clear it to fetch whole days). `docker builder prune` can reclaim the Docker build cache (~2.4 GB).
+- **Disk usage from full ULog**: ~9.3 GB/day of raw ULog. Free space has swung between 9 and 30 GiB during the build; images now take ~12.8 GB (the Airflow image is 4.1 GB). Mitigated by the 1-day raw window (a RustFS lifecycle rule since Phase 10; asynchronous, so two days can briefly coexist), the `MIN_FREE_DISK_GB` guard, and `PX4_MAX_ULOGS_PER_RUN` in `.env` (the local `.env` currently caps at 25/day; clear it to fetch whole days). `docker builder prune` can reclaim the Docker build cache (~2.4 GB).
 - **RustFS 1.0.x and dbt Charts 0.9.x are young**: versions pinned; standard S3 API only.
 - **ULog topic schema drift across firmware versions**: the parser tolerates missing fields (null column + a count in audit).
 - **Being blocked by PX4 (403/444)**: abort the run, no retries.

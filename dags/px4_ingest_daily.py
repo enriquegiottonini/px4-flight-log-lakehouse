@@ -2,27 +2,31 @@
 ### PX4 daily ingestion
 
 Index branch:
-- `api_healthcheck` → `snapshot_index` (conditional GET) → `index_changed` → `load_index`.
+- `snapshot_index` (conditional GET) → `index_changed` → `load_index`.
 - On a **304** (index unchanged since the last load), `index_changed` short-circuits and `load_index` is skipped.
+- If PX4 is unreachable, `snapshot_index` retries with backoff and then fails with the error in its log.
 
 ULog branch (runs either way, driven by bronze + `audit.ulog_downloads`):
-- `purge_expired_ulogs` first (D-004), then `plan_ulogs` for the uploads of the day before the run day (UTC).
-- `fetch_ulogs` × batches (pool `px4_pool`), then `parse_ulogs` × batches.
+- `plan_ulogs` for one upload day (default: the day before the run day, UTC).
+- `fetch_ulogs` × batches, then `parse_ulogs` × batches, at most 4 at a time.
+- Old raw files are deleted by RustFS itself: the lifecycle rule on `landing/px4/ulog/` (1 day, set by `setup`).
 
 Params:
+- `day`: (re)process any upload day, e.g. `{"day": "2026-10-10"}`. This replaced the backfill DAG.
+- `max_ulogs`: cap downloads; empty means every log of the day, ~9 GB.
 - `index_url`: point it at a dead host to watch retries fail.
-- `max_ulogs`: cap downloads; the default is every log of the day, ~9 GB.
 """
 
 from __future__ import annotations
 
-import json
-
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag, get_current_context, task
 
-from px4_common import (DEFAULT_ARGS, DEFAULT_MAX_ULOGS, INDEX_URL, INGEST, INGEST_ENV, LOG_MESSAGES, LOGS_INDEX, RUN_DAY, START,
-                        TELEMETRY, cli, summary)
+from px4_common import (DEFAULT_ARGS, DEFAULT_MAX_ULOGS, INDEX_URL, INGEST, INGEST_ENV, LOG_MESSAGES, LOGS_INDEX, RUN_DAY,
+                        START, TELEMETRY, cli, summary)
+
+# Upload day to process (Jinja expression): the `day` param, or the day before the run day (UTC)
+DAY = "(params.day or macros.ds_add(" + RUN_DAY + ", -1))"
 
 
 @dag(
@@ -33,8 +37,10 @@ from px4_common import (DEFAULT_ARGS, DEFAULT_MAX_ULOGS, INDEX_URL, INGEST, INGE
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
     params={
-        "index_url": Param(INDEX_URL, type="string", description="PX4 index endpoint"),
+        "day": Param(None, type=["null", "string"], format="date",
+                     description="upload day to process (empty = the day before the run day)"),
         "max_ulogs": Param(DEFAULT_MAX_ULOGS, type=["null", "integer"], minimum=1, description="cap ULog downloads (empty = all)"),
+        "index_url": Param(INDEX_URL, type="string", description="PX4 index endpoint"),
     },
     tags=["px4", "ingest"],
     doc_md=__doc__,
@@ -42,7 +48,6 @@ from px4_common import (DEFAULT_ARGS, DEFAULT_MAX_ULOGS, INDEX_URL, INGEST, INGE
 def px4_ingest_daily():
     env = {"env": INGEST_ENV, "append_env": True}
 
-    healthcheck = BashOperator(task_id="api_healthcheck", bash_command=cli("healthcheck"), **env)
     snapshot = BashOperator(task_id="snapshot_index", bash_command=cli("snapshot-index"), **env)
 
     @task.short_circuit(ignore_downstream_trigger_rules=False)
@@ -59,10 +64,8 @@ def px4_ingest_daily():
     )
 
     # none_failed: run after load_index whether it ran or was skipped by the 304
-    purge = BashOperator(task_id="purge_expired_ulogs", bash_command=cli("purge-ulogs --today {{ " + RUN_DAY + " }}"),
-                         trigger_rule="none_failed", **env)
-    plan = BashOperator(task_id="plan_ulogs",
-                        bash_command=cli("plan-ulogs --start {{ macros.ds_add(" + RUN_DAY + ", -1) }} --end {{ " + RUN_DAY + " }}"),
+    plan = BashOperator(task_id="plan_ulogs", trigger_rule="none_failed",
+                        bash_command=cli("plan-ulogs --start {{ " + DAY + " }} --end {{ macros.ds_add(" + DAY + ", 1) }}"),
                         **env)
 
     @task
@@ -71,14 +74,14 @@ def px4_ingest_daily():
         s, run_id = summary(plan_summary), get_current_context()["run_id"]
         return [f"{INGEST} --run-id '{run_id}' {action} --plan {s['out']} --batch {i}" for i in range(s["batches"])]
 
-    fetch = BashOperator.partial(task_id="fetch_ulogs", pool="px4_pool", **env).expand(
+    # max_active_tis_per_dagrun: at most 4 batches talk to the PX4 CDN at once (no Airflow pool to create)
+    fetch = BashOperator.partial(task_id="fetch_ulogs", max_active_tis_per_dagrun=4, **env).expand(
         bash_command=batch_commands.override(task_id="fetch_commands")(plan.output, "fetch-ulogs"))
-    parse = BashOperator.partial(task_id="parse_ulogs", pool="px4_pool", outlets=[TELEMETRY, LOG_MESSAGES],
+    parse = BashOperator.partial(task_id="parse_ulogs", max_active_tis_per_dagrun=4, outlets=[TELEMETRY, LOG_MESSAGES],
                                  **env).expand(
         bash_command=batch_commands.override(task_id="parse_commands")(plan.output, "parse-ulogs"))
 
-    healthcheck >> snapshot
-    index_changed(snapshot.output) >> load >> purge >> plan
+    index_changed(snapshot.output) >> load >> plan
     fetch >> parse
 
 

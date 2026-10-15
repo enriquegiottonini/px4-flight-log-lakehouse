@@ -1,9 +1,9 @@
-# PX4 flight-log lakehouse. Services are added phase by phase (CLAUDE.md section 7);
-# compare with `git diff phase-N phase-M -- infrastructure/docker-compose.yml`.
+# PX4 flight-log lakehouse: 8 containers (6 services + 2 one-shot jobs; Phase 10 simplification).
+#   postgres -> lakekeeper-migrate -> lakekeeper -> setup (+ rustfs) -> trino -> airflow, charts
 # Relative paths below resolve from this folder (infrastructure/); variables come from the root .env.
 name: px4-lakehouse
 
-# Shared by the four Airflow services (Phase 5)
+# Shared by the containers that run the Airflow image (setup, airflow)
 x-airflow-common: &airflow-common
   build:
     context: ..  # repo root, filtered by /.dockerignore
@@ -17,20 +17,20 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"  # nothing downloads until you unpause a DAG
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://localhost:8080/execution/  # standalone: same container
     # No login (local toy, ports bound to 127.0.0.1): everyone is admin. Same no-auth non-goal as Trino.
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set AIRFLOW_JWT_SECRET in .env}
     AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?set AIRFLOW_API_SECRET_KEY in .env}
     AIRFLOW__API__WORKERS: "1"  # 8 GB laptop budget
-    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW_CONN_TRINO_DEFAULT: '{"conn_type": "trino", "host": "trino", "port": 8080, "login": "airflow", "extra": {"catalog": "iceberg"}}'
     # drone_ingest (runs from /opt/ingest-venv through its CLI; internal service names)
     S3_ENDPOINT: http://rustfs:9000
     S3_ACCESS_KEY: ${S3_ACCESS_KEY}
     S3_SECRET_KEY: ${S3_SECRET_KEY}
     CATALOG_URI: http://lakekeeper:8181/catalog
+    LAKEKEEPER_URL: http://lakekeeper:8181  # setup.py
     WORK_DIR: /opt/airflow/work
     DISK_GUARD_PATH: /opt/airflow/work  # on the Docker VM disk, like the RustFS volume
     INDEX_START_DATE: ${PX4_INDEX_START_DATE:-2025-01-01}
@@ -47,13 +47,9 @@ x-airflow-common: &airflow-common
     - airflow-logs:/opt/airflow/logs
     - airflow-work:/opt/airflow/work
   user: "50000:0"
-  restart: unless-stopped
-  depends_on:
-    airflow-init:
-      condition: service_completed_successfully
 
 services:
-  # One Postgres, one database + role per consumer: airflow (Phase 5), lakekeeper (Phase 3).
+  # One Postgres, one database + role per consumer: airflow, lakekeeper.
   postgres:
     image: postgres:${POSTGRES_TAG:?set POSTGRES_TAG in .env}
     environment:
@@ -105,28 +101,7 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Runs once: creates the buckets (idempotent), then exits 0
-  rustfs-init:
-    image: amazon/aws-cli:${AWSCLI_TAG:?set AWSCLI_TAG in .env}
-    entrypoint: ["/bin/sh", "/scripts/init-buckets.sh"]
-    environment:
-      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
-      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
-      AWS_DEFAULT_REGION: us-east-1
-      AWS_ENDPOINT_URL: http://rustfs:9000
-      AWS_CONFIG_FILE: /scripts/aws-config  # forces path-style addressing
-      BUCKETS: landing lakehouse reports
-      # Browser origins allowed to read s3://lakehouse (Lakekeeper UI's DuckDB-WASM query engine)
-      CORS_BUCKET: lakehouse
-      CORS_ORIGINS: http://localhost:8181 http://127.0.0.1:8181
-    volumes:
-      - ./rustfs:/scripts:ro
-    depends_on:
-      rustfs:
-        condition: service_healthy
-    restart: "no"
-
-  # --- Phase 3: Iceberg catalog (Lakekeeper) + SQL engine (Trino) ---------------
+  # --- Iceberg catalog (Lakekeeper) + SQL engine (Trino) --------------------------------
 
   # Runs once: creates/upgrades Lakekeeper's tables in the lakekeeper database
   lakekeeper-migrate:
@@ -162,27 +137,6 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # Runs once: accepts the terms (bootstrap) and creates warehouse "px4" on s3://lakehouse/
-  lakekeeper-bootstrap:
-    image: curlimages/curl:${CURL_TAG:?set CURL_TAG in .env}
-    entrypoint: ["/bin/sh", "/scripts/bootstrap.sh"]
-    environment:
-      LAKEKEEPER_URL: http://lakekeeper:8181
-      WAREHOUSE: px4
-      S3_BUCKET: lakehouse
-      # Stored in the warehouse and handed to clients: must resolve in containers AND the browser
-      S3_ENDPOINT: http://rustfs.localhost:9000
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-    volumes:
-      - ./lakekeeper:/scripts:ro
-    depends_on:
-      lakekeeper:
-        condition: service_healthy
-      rustfs-init:
-        condition: service_completed_successfully
-    restart: "no"
-
   # Single-node SQL engine; stores nothing itself. UI on http://localhost:8085
   trino:
     image: trinodb/trino:${TRINO_TAG:?set TRINO_TAG in .env}
@@ -203,85 +157,56 @@ services:
       retries: 30
       start_period: 20s
     depends_on:
-      lakekeeper-bootstrap:
+      setup:  # the Iceberg catalog (warehouse px4) must exist before Trino uses it
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # Runs once: creates the bronze/silver/gold/audit schemas through Trino (idempotent)
-  trino-init:
-    image: trinodb/trino:${TRINO_TAG}
-    entrypoint: ["trino", "--server", "http://trino:8080", "--user", "init", "--file", "/scripts/init-schemas.sql"]
-    volumes:
-      - ./trino/init:/scripts:ro
-    healthcheck:
-      disable: true  # the image's built-in check is for the server, not this CLI job
-    depends_on:
-      trino:
-        condition: service_healthy
-    restart: "no"
+  # --- Setup + orchestration (Airflow image) ------------------------------------------------
 
-  # --- Phase 5: orchestration (Airflow 3, LocalExecutor) ---------------------------
-
-  # Runs once: Airflow's tables, the CDN pool, dbt packages (Cosmos parses with them) and dbt's manifest
-  # (dbt Charts resolves ref() through target/manifest.json)
-  airflow-init:
+  # Runs once, idempotent: everything a person would configure by hand (infrastructure/setup/setup.py):
+  # buckets + lifecycle rules + CORS, Lakekeeper bootstrap/warehouse/soft delete, namespaces + protection;
+  # then dbt deps/parse (Cosmos parses the project with the packages; dbt Charts resolves ref() via the manifest).
+  setup:
     <<: *airflow-common
     entrypoint: /bin/bash
     command:
       - -c
       - >-
-        airflow db migrate && airflow pools set px4_pool 4 "PX4 CDN download/parse concurrency"
-        && (cd /opt/dbt && /opt/dbt-venv/bin/dbt deps --quiet && /opt/dbt-venv/bin/dbt parse --quiet)
-        && airflow version
+        /opt/ingest-venv/bin/python /opt/setup/setup.py
+        && cd /opt/dbt && /opt/dbt-venv/bin/dbt deps --quiet && /opt/dbt-venv/bin/dbt parse --quiet
+        && echo "setup: dbt packages + manifest ready"
+    volumes:
+      - ../dbt:/opt/dbt
+      - ./setup:/opt/setup:ro
     depends_on:
-      postgres:
+      lakekeeper:
+        condition: service_healthy
+      rustfs:
         condition: service_healthy
     restart: "no"
 
-  # UI + REST API + the execution API that task processes report to. http://localhost:8080
-  airflow-apiserver:
+  # All of Airflow in one container (`airflow standalone`): api-server (UI + REST + execution API),
+  # scheduler (LocalExecutor: runs the tasks), dag-processor and triggerer; migrates its database on start.
+  # http://localhost:8080, no login.
+  airflow:
     <<: *airflow-common
-    command: api-server
+    command: standalone
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "-s", "-o", "/dev/null", "http://localhost:8080/api/v2/monitor/health"]
       interval: 10s
       timeout: 10s
-      retries: 20
-      start_period: 30s
-
-  # Decides what runs when; with LocalExecutor it also runs the tasks (as subprocesses)
-  airflow-scheduler:
-    <<: *airflow-common
-    command: scheduler
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "-s", "-o", "/dev/null", "http://localhost:8974/health"]
-      interval: 10s
-      timeout: 10s
-      retries: 20
-      start_period: 30s
+      retries: 30
+      start_period: 60s
     depends_on:
-      airflow-init:
+      setup:
         condition: service_completed_successfully
-      airflow-apiserver:
+      trino:
         condition: service_healthy
-      # tasks need the bronze/audit namespaces (and so the whole catalog chain)
-      trino-init:
-        condition: service_completed_successfully
+    restart: unless-stopped
 
-  # Parses dags/*.py into serialized DAGs (separate from the scheduler since Airflow 3)
-  airflow-dag-processor:
-    <<: *airflow-common
-    command: dag-processor
-    healthcheck:
-      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
-      interval: 30s
-      timeout: 30s
-      retries: 10
-      start_period: 30s
-
-  # --- Phase 8: dashboards (dbt Charts) -------------------------------------------------
+  # --- Dashboards (dbt Charts) -------------------------------------------------------------
 
   # Live boards on http://localhost:8088/<board>/ (e.g. /fleet_overview/). Same image as Airflow:
   # dct lives in /opt/charts-venv, so no extra image on disk. Queries Trino as user "charts".
@@ -309,9 +234,22 @@ services:
     depends_on:
       trino:
         condition: service_healthy
-      airflow-init:  # dbt parse -> target/manifest.json
+      setup:  # dbt parse -> target/manifest.json
         condition: service_completed_successfully
     restart: unless-stopped
+
+  # On demand only (profile "tools", never started by `make up`): `make s3 ARGS="ls s3://landing"`
+  aws:
+    profiles: [tools]
+    image: amazon/aws-cli:${AWSCLI_TAG:?set AWSCLI_TAG in .env}
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://rustfs:9000
+      AWS_CONFIG_FILE: /aws-config  # path-style addressing
+    volumes:
+      - ./setup/aws-config:/aws-config:ro
 
 volumes:
   postgres-data:

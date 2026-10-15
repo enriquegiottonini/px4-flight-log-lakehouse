@@ -1,4 +1,7 @@
-"""PX4 ULog files: plan -> fetch to landing -> parse to bronze at 1 Hz -> purge old raw files (D-004)."""
+"""PX4 ULog files: plan -> fetch to landing -> parse to bronze at 1 Hz.
+
+Old raw files expire by themselves: RustFS lifecycle rule on landing/px4/ulog/ (1 day, D-004; setup.py).
+"""
 
 from __future__ import annotations
 
@@ -6,7 +9,7 @@ import logging
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -274,44 +277,3 @@ def parse_ulogs(settings: Settings, catalog: RestCatalog, entries: list[dict], r
     audit.record_run(catalog, "ulog_parse", run_id, "success", started, read=len(events), inserted=parsed,
                      rejected=rejected)
     return {"parsed": parsed, "rejected": rejected, "telemetry_rows": n_tel, "message_rows": n_msg}
-
-
-# --- purge --------------------------------------------------------------------------------------
-
-def purge_ulogs(settings: Settings, today: date | None = None) -> dict:
-    """Delete landed .ulg folders older than the retention window. Run BEFORE fetching (D-004)."""
-    today = today or datetime.now(timezone.utc).date()
-    cutoff = today - timedelta(days=settings.ulog_retention_days)
-    s3 = storage.s3_client(settings)
-    deleted_files = deleted_bytes = 0
-    purged = []
-    for prefix in storage.list_prefixes(s3, settings.landing_bucket, ULOG_PREFIX):
-        day = date.fromisoformat(prefix.rstrip("/").split("log_date=")[-1])
-        if day < cutoff:
-            n, b = storage.delete_prefix(s3, settings.landing_bucket, prefix)
-            deleted_files, deleted_bytes = deleted_files + n, deleted_bytes + b
-            purged.append(day.isoformat())
-    log.info("purged %d ULog days before %s: %d files, %.1f MB", len(purged), cutoff, deleted_files, deleted_bytes / 1e6)
-    return {"cutoff": cutoff.isoformat(), "days": purged, "files": deleted_files, "bytes": deleted_bytes}
-
-
-# --- all-in-one for one window (used by the backfill DAG, one day at a time) ----------------------
-
-def run_ulogs(settings: Settings, catalog: RestCatalog, run_id: str, start: date, end: date,
-              today: date | None = None) -> dict:
-    """purge -> plan -> fetch + parse each batch -> purge. Landing never holds more than the window."""
-    before = purge_ulogs(settings, today)
-    entries = plan_ulogs(settings, catalog, start, end)
-    totals = {"entries": len(entries), "downloaded": 0, "rejected": 0, "failed": 0, "parsed": 0,
-              "telemetry_rows": 0, "message_rows": 0}
-    for batch in batches(entries, settings.ulog_batch_size):
-        fetched = fetch_ulogs(settings, catalog, batch, run_id)
-        parsed = parse_ulogs(settings, catalog, batch, run_id)
-        for k in ("downloaded", "rejected", "failed"):
-            totals[k] += fetched[k]
-        totals["rejected"] += parsed["rejected"]
-        for k in ("parsed", "telemetry_rows", "message_rows"):
-            totals[k] += parsed[k]
-    after = purge_ulogs(settings, today)
-    return {"window": [start.isoformat(), end.isoformat()], **totals,
-            "purged_days": sorted(set(before["days"]) | set(after["days"]))}

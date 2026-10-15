@@ -1,14 +1,11 @@
 """drone-ingest command line. Every command prints a JSON summary on stdout; logs go to stderr.
 
     drone-ingest init-tables
-    drone-ingest healthcheck
     drone-ingest snapshot-index [--run-id ID]
     drone-ingest load-index     [--run-id ID] [--manifest KEY]
     drone-ingest plan-ulogs     [--out plan.json] [--start YYYY-MM-DD --end YYYY-MM-DD]
     drone-ingest fetch-ulogs    --plan plan.json [--batch N]
     drone-ingest parse-ulogs    --plan plan.json [--batch N]
-    drone-ingest purge-ulogs    [--today YYYY-MM-DD]
-    drone-ingest run-ulogs      --start YYYY-MM-DD --end YYYY-MM-DD   (purge, plan, fetch, parse, purge)
 """
 
 from __future__ import annotations
@@ -55,7 +52,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", default=f"manual__{datetime.now(timezone.utc):%Y%m%dT%H%M%S}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init-tables", help="create missing bronze/audit tables")
-    sub.add_parser("healthcheck", help="check that the PX4 index URL answers")
     sub.add_parser("snapshot-index", help="conditional GET of the PX4 index into landing")
     p = sub.add_parser("load-index", help="diff-load the latest landed snapshot into bronze")
     p.add_argument("--manifest", help="landing key of a _manifest.json (default: newest)")
@@ -67,22 +63,12 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--plan", required=True)
         p.add_argument("--batch", type=int, help="batch index (default: all batches)")
-    p = sub.add_parser("purge-ulogs", help="delete landed ULog days older than ULOG_RETENTION_DAYS")
-    p.add_argument("--today", type=date.fromisoformat, help="reference day (default: UTC today)")
-    p = sub.add_parser("run-ulogs", help="purge, plan, fetch and parse every batch of a window, then purge")
-    p.add_argument("--start", type=date.fromisoformat, required=True)
-    p.add_argument("--end", type=date.fromisoformat, required=True, help="exclusive")
-    p.add_argument("--today", type=date.fromisoformat, help="reference day for purging (default: UTC today)")
     args = parser.parse_args(argv)
 
     _setup_logging(args.run_id, args.command)
     settings = get_settings()
-    if args.command == "healthcheck":
-        print(json.dumps({"command": args.command, **index.healthcheck(settings)}))
-        return 0
     catalog = cat.get_catalog(settings)
-    if args.command != "purge-ulogs":
-        cat.ensure_tables(catalog)
+    cat.ensure_tables(catalog)
 
     if args.command == "init-tables":
         result = {"tables": sorted(cat.TABLES)}
@@ -103,10 +89,6 @@ def main(argv: list[str] | None = None) -> int:
         result = ulog.fetch_ulogs(settings, catalog, _load_plan(args.plan, args.batch), args.run_id)
     elif args.command == "parse-ulogs":
         result = ulog.parse_ulogs(settings, catalog, _load_plan(args.plan, args.batch), args.run_id)
-    elif args.command == "purge-ulogs":
-        result = ulog.purge_ulogs(settings, args.today)
-    elif args.command == "run-ulogs":
-        result = ulog.run_ulogs(settings, catalog, args.run_id, args.start, args.end, args.today)
     print(json.dumps({"command": args.command, "run_id": args.run_id, **result}, default=str))
     return 0
 

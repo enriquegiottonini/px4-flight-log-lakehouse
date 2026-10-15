@@ -20,6 +20,10 @@ vars:
 
 models:
   px4_lakehouse:
+    # CREATE OR REPLACE TABLE instead of create-tmp/rename/drop: each run is a new Iceberg snapshot of the
+    # same table (time travel across runs: SELECT * FROM gold."<model>$snapshots"), and no dropped
+    # tables pile up in Lakekeeper's soft-delete list. Only affects table models (incremental ones merge).
+    +on_table_exists: replace
     silver:
       +schema: silver
       +materialized: table

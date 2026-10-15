@@ -45,11 +45,9 @@ class Settings:
     # PX4 index
     index_url: str
     index_start_date: date            # bronze ignores records uploaded before this date
-    index_snapshot_retention: int     # raw index snapshots kept in landing
     # PX4 ULogs (D-004): one full UTC day of uploads, [start, end)
     ulog_start_date: date
     ulog_end_date: date
-    ulog_retention_days: int          # raw .ulg kept in landing
     ulog_max_bytes: int               # bigger logs are rejected as too_large
     max_ulogs_per_run: int | None     # None = all (cap only for development)
     ulog_batch_size: int
@@ -74,10 +72,8 @@ def get_settings() -> Settings:
         landing_bucket=_get("LANDING_BUCKET", "landing"),
         index_url=_get("INDEX_URL", "https://review.px4.io/dbinfo"),
         index_start_date=date.fromisoformat(_get("INDEX_START_DATE", "2025-01-01")),
-        index_snapshot_retention=int(_get("INDEX_SNAPSHOT_RETENTION", "7")),
         ulog_start_date=date.fromisoformat(_get("ULOG_START_DATE", (today - timedelta(days=1)).isoformat())),
         ulog_end_date=date.fromisoformat(_get("ULOG_END_DATE", today.isoformat())),
-        ulog_retention_days=int(_get("ULOG_RETENTION_DAYS", "1")),
         ulog_max_bytes=int(_get("ULOG_MAX_BYTES", "300000000")),
         max_ulogs_per_run=int(max_ulogs) if max_ulogs else None,
         ulog_batch_size=int(_get("ULOG_BATCH_SIZE", "50")),

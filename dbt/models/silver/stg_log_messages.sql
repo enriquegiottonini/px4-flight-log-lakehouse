@@ -18,5 +18,8 @@ select
     _ingested_at
 from {{ source('bronze', 'log_messages_raw') }}
 {% if is_incremental() %}
-where _ingested_at > (select max(_ingested_at) from {{ this }})
+where _ingested_at > (
+        -- coalesce: on an EMPTY target max() is NULL and `x > NULL` is never true, so nothing would
+        -- ever be inserted (a first run before any data arrived left stg_telemetry empty for good)
+        select coalesce(max(_ingested_at), timestamp '1970-01-01 00:00:00 UTC') from {{ this }})
 {% endif %}
