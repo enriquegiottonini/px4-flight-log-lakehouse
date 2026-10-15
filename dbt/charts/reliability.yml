@@ -1,0 +1,125 @@
+# The period filter makes these queries untestable offline in dbt Charts 0.9.1 (templated predicates);
+# infrastructure/scripts/check_charts.py verifies them by running them instead.
+title: PX4 reliability signals
+notes: >
+  Crash ratings and error labels are set by pilots when uploading (rare: most logs are unrated). Logged errors are
+  counted by PX4 itself inside each log. Simulator (SITL) logs are excluded.
+source: lakehouse
+
+variables:
+  period:
+    input: daterange
+    label: Upload period
+    default: ["2025-01-01", "2026-12-31"]
+
+queries:
+  kpis: |
+    SELECT
+      sum(r.logs) AS logs,
+      sum(r.crash_logs) AS crash_logs,
+      sum(r.logs_with_error_labels) AS labelled_logs,
+      sum(r.logs_with_logged_errors) * 1.0 / nullif(sum(r.logs), 0) AS share_with_errors
+    FROM {{ ref('mart_reliability_daily') }} AS r
+    WHERE {{ filter_date_range('r.uploaded_date', period) }}
+  errors_by_week: |
+    SELECT date_trunc('week', r.uploaded_date) AS week,
+           sum(r.logs_with_logged_errors) * 1.0 / nullif(sum(r.logs), 0) AS share_with_errors
+    FROM {{ ref('mart_reliability_daily') }} AS r
+    WHERE {{ filter_date_range('r.uploaded_date', period) }}
+    GROUP BY 1 ORDER BY 1
+  crashes_by_month: |
+    SELECT m.month, m.vehicle_class, m.crash_logs
+    FROM {{ ref('mart_flights_by_class_month') }} AS m
+    WHERE {{ filter_date_range('m.month', period) }} AND m.crash_logs > 0
+    ORDER BY m.month
+  firmware: |
+    SELECT f.month, f.fw_major_minor, f.share_of_month
+    FROM {{ ref('mart_firmware_adoption') }} AS f
+    WHERE {{ filter_date_range('f.month', period) }}
+      AND f.fw_major_minor IN ('1.13', '1.14', '1.15', '1.16', '1.17', '1.18', 'unknown')
+    ORDER BY f.month, f.fw_major_minor
+  top_messages: |
+    SELECT t.level, t.module, t.message_template, t.logs_affected, t.occurrences
+    FROM {{ ref('mart_top_log_messages') }} AS t
+    WHERE {{ filter_date_range('t.last_seen', period) }}
+    ORDER BY t.logs_affected DESC, t.occurrences DESC
+    LIMIT 15
+
+charts:
+  k_logs:
+    label: Logs in the period
+    query: kpis
+    type: kpi
+    value: logs
+    style: {value: {format: integer}}
+  k_crashes:
+    label: Logs rated as a crash by the pilot
+    query: kpis
+    type: kpi
+    value: crash_logs
+    style: {value: {format: integer}}
+  k_labelled:
+    label: Logs with a pilot error label
+    query: kpis
+    type: kpi
+    value: labelled_logs
+    style: {value: {format: integer}}
+  k_errors:
+    label: Logs where PX4 logged an error (of all logs)
+    query: kpis
+    type: kpi
+    value: share_with_errors
+    style: {value: {format: percent}}
+  errors_trend:
+    title: Logs with a PX4-logged error, weekly
+    subtitle: Logs with errors ÷ all logs uploaded that week.
+    query: errors_by_week
+    type: line
+    x: week
+    y: share_with_errors
+    x_label: Week
+    y_label: Share of logs
+    style: {number_format: percent}
+  crashes:
+    title: Crash-rated logs per month, by vehicle class
+    query: crashes_by_month
+    type: bar
+    x: month
+    y: crash_logs
+    color: vehicle_class
+    x_label: Upload month
+    y_label: Logs
+    style: {orientation: vertical, stack: zero, number_format: ",.0f"}
+  firmware_share:
+    title: Which PX4 release the uploaded logs ran
+    subtitle: Share of each month's logs (major.minor); older releases omitted, so columns may not reach 100 %.
+    query: firmware
+    type: area
+    x: month
+    y: share_of_month
+    color: fw_major_minor
+    x_label: Upload month
+    y_label: Share of logs
+    style: {stack: zero, number_format: percent}
+  messages:
+    title: Most widespread PX4 warnings and errors
+    subtitle: Ranked by how many logs contain the message (numbers replaced by #).
+    query: top_messages
+    type: table
+    style:
+      columns:
+        level: {label: Level}
+        module: {label: Module}
+        message_template: {label: Message}
+        logs_affected: {label: Logs, format: integer, align: right}
+        occurrences: {label: Occurrences, format: integer, align: right}
+
+rows:
+  - cols: [k_logs, k_crashes, k_labelled, k_errors]
+  - cols:
+      - width: "50%"
+        rows: [errors_trend]
+      - width: "50%"
+        rows: [crashes]
+  - firmware_share
+  - messages

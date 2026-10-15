@@ -32,6 +32,13 @@ RUN uv venv /opt/dbt-venv \
  && uv pip install --python /opt/dbt-venv/bin/python "dbt-trino==1.10.6" "dbt-core==1.10.23" \
  && /opt/dbt-venv/bin/dbt --version
 
+# dbt Charts (Phase 8): boards in dbt/charts, rendered by `dct`. Pinned to the same dbt-core/dbt-trino
+# as /opt/dbt-venv so both read the project identically. Also serves the `charts` service.
+RUN uv venv /opt/charts-venv \
+ && uv pip install --python /opt/charts-venv/bin/python \
+      "dbt-charts[trino,server]==0.9.1" "dbt-trino==1.10.6" "dbt-core==1.10.23" \
+ && /opt/charts-venv/bin/dct --version
+
 # Work dir for drone_ingest (downloads, plan files). A new named volume mounted here copies this
 # directory (ownership included) on first use; .keep makes sure the copy happens.
 RUN mkdir -p /opt/airflow/work && touch /opt/airflow/work/.keep && chown -R airflow:root /opt/airflow/work

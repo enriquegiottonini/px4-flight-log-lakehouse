@@ -1,0 +1,134 @@
+# Convention for every board: alias each ref() and qualify every column (m.logs, not logs).
+# That lets `dct validate --strict` check each column against the dbt model offline
+# (ERR-DBT-MODEL-COLUMN-MISSING) instead of warning that it can't tell which table a column is from.
+title: PX4 fleet overview
+notes: >
+  Public PX4 Flight Review uploads since 2025-01-01, by upload date. Simulator (SITL) logs are excluded.
+source: lakehouse
+
+variables:
+  period:
+    input: daterange
+    label: Upload period
+    default: ["2025-01-01", "2026-12-31"]
+  classes:
+    input: multiselect
+    label: Vehicle class
+    options:
+      static: [multirotor, fixed_wing, vtol, helicopter, rover, other]
+    default: [multirotor, fixed_wing, vtol, helicopter, rover, other]
+
+queries:
+  kpis: |
+    SELECT
+      sum(m.logs) AS logs,
+      sum(m.flight_hours) AS flight_hours,
+      sum(m.flight_hours) * 60 / nullif(sum(m.logs), 0) AS avg_minutes_per_log
+    FROM {{ ref('mart_flights_by_class_month') }} AS m
+    WHERE {{ filter_date_range('m.month', period) }} AND {{ filter('m.vehicle_class', classes) }}
+  vehicles: |
+    SELECT count(*) AS vehicles
+    FROM {{ ref('mart_vehicle_utilization') }} AS v
+    WHERE {{ filter_date_range('v.last_upload', period) }} AND {{ filter('v.vehicle_class', classes) }}
+  hours_by_month: |
+    SELECT m.month, m.vehicle_class, m.flight_hours
+    FROM {{ ref('mart_flights_by_class_month') }} AS m
+    WHERE {{ filter_date_range('m.month', period) }} AND {{ filter('m.vehicle_class', classes) }}
+    ORDER BY m.month, m.vehicle_class
+  logs_by_week: |
+    SELECT date_trunc('week', r.uploaded_date) AS week, sum(r.logs) AS logs
+    FROM {{ ref('mart_reliability_daily') }} AS r
+    WHERE {{ filter_date_range('r.uploaded_date', period) }}
+    GROUP BY 1 ORDER BY 1
+  class_mix: |
+    SELECT m.vehicle_class, sum(m.logs) AS logs
+    FROM {{ ref('mart_flights_by_class_month') }} AS m
+    WHERE {{ filter_date_range('m.month', period) }} AND {{ filter('m.vehicle_class', classes) }}
+    GROUP BY 1 ORDER BY 2 DESC
+  top_hardware: |
+    SELECT v.sys_hw AS flight_controller, count(*) AS vehicles, sum(v.logs) AS logs,
+           sum(v.flight_hours) AS flight_hours
+    FROM {{ ref('mart_vehicle_utilization') }} AS v
+    WHERE {{ filter_date_range('v.last_upload', period) }} AND {{ filter('v.vehicle_class', classes) }}
+    GROUP BY 1 ORDER BY 3 DESC
+    LIMIT 10
+
+charts:
+  k_logs:
+    label: Flight logs uploaded
+    query: kpis
+    type: kpi
+    value: logs
+    style: {value: {format: integer}}
+  k_hours:
+    label: Flight hours
+    query: kpis
+    type: kpi
+    value: flight_hours
+    style: {value: {format: integer}}
+  k_minutes:
+    label: Average minutes per log
+    query: kpis
+    type: kpi
+    value: avg_minutes_per_log
+    style: {value: {format: number}}
+  k_vehicles:
+    label: Vehicles with a last upload in the period
+    query: vehicles
+    type: kpi
+    value: vehicles
+    style: {value: {format: integer}}
+  hours_trend:
+    title: Flight hours per month, by vehicle class
+    subtitle: Multirotors dominate; the current month is incomplete.
+    query: hours_by_month
+    type: area
+    x: month
+    y: flight_hours
+    color: vehicle_class
+    x_label: Upload month
+    y_label: Flight hours
+    style: {stack: zero, number_format: ",.0f"}
+  mix:
+    title: Logs by vehicle class
+    query: class_mix
+    type: bar
+    x: vehicle_class
+    y: logs
+    sort: {by: logs, order: desc}
+    x_label: Vehicle class
+    y_label: Logs
+    style: {number_format: ",.0f"}
+  uploads_trend:
+    title: Logs uploaded per week
+    subtitle: All vehicle classes (the class filter does not apply here).
+    query: logs_by_week
+    type: line
+    x: week
+    y: logs
+    x_label: Week
+    y_label: Logs
+    style: {number_format: ",.0f"}
+  hardware:
+    title: Top 10 flight controllers by logs
+    query: top_hardware
+    type: table
+    style:
+      columns:
+        flight_controller: {label: Flight controller}
+        vehicles: {label: Vehicles, format: integer, align: right}
+        logs: {label: Logs, format: integer, align: right}
+        flight_hours: {label: Flight hours, format: integer, align: right}
+
+rows:
+  - cols: [k_logs, k_hours, k_minutes, k_vehicles]
+  - cols:
+      - width: "66%"
+        rows: [hours_trend]
+      - width: "34%"
+        rows: [mix]
+  - cols:
+      - width: "50%"
+        rows: [uploads_trend]
+      - width: "50%"
+        rows: [hardware]

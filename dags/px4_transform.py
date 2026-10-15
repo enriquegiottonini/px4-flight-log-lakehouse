@@ -8,6 +8,7 @@ Steps:
 - `seed`: lookup tables.
 - `silver` and `gold`: Cosmos task groups. Every dbt model becomes a **run** task followed by a **test** task.
 - `docs_generate`: emits the `iceberg://px4/gold` asset.
+- `check_charts` → `render_charts` → `upload_reports`: every dbt Charts board must validate and render cleanly, then HTML and PDF copies go to `s3://reports/<run day>/` (Phase 8).
 
 Test severity:
 - A test with severity `error` fails its task, and every model downstream is skipped (`upstream_failed`).
@@ -19,15 +20,18 @@ dbt runs from `/opt/dbt-venv` (D-008). Cosmos finds the models by running `dbt l
 from __future__ import annotations
 
 from airflow.providers.standard.operators.bash import BashOperator
-from airflow.sdk import Asset, dag
+from airflow.sdk import Asset, dag, task
 from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
 from cosmos.constants import InvocationMode, LoadMode, TestBehavior
 
-from px4_common import DEFAULT_ARGS, LOG_MESSAGES, LOGS_INDEX, START, TELEMETRY
+from px4_common import DEFAULT_ARGS, LOG_MESSAGES, LOGS_INDEX, RUN_DAY, START, TELEMETRY
 
 DBT = "/opt/dbt-venv/bin/dbt"
 PROJECT = "/opt/dbt"
-GOLD = Asset("iceberg://px4/gold")  # dashboards (Phase 8) can schedule on this
+DCT = "/opt/charts-venv/bin/dct"
+GOLD = Asset("iceberg://px4/gold")
+REPORTS = Asset("s3://reports")
+REPORTS_DIR = "/opt/airflow/work/reports/{{ " + RUN_DAY + " }}"
 
 project = ProjectConfig(dbt_project_path=PROJECT, install_dbt_deps=False)  # airflow-init runs dbt deps
 profile = ProfileConfig(profile_name="px4_lakehouse", target_name="dev", profiles_yml_filepath=f"{PROJECT}/profiles.yml")
@@ -67,7 +71,43 @@ def px4_transform():
     docs = BashOperator(task_id="docs_generate", bash_command=f"cd {PROJECT} && {DBT} docs generate --static",
                         outlets=[GOLD])
 
-    freshness >> seed >> silver >> gold >> docs
+    check = BashOperator(
+        task_id="check_charts",
+        bash_command=f"cd {PROJECT} && /opt/charts-venv/bin/python /opt/scripts/check_charts.py --dct {DCT}",
+        env={"TRINO_USER": "charts"}, append_env=True,
+    )
+    render = BashOperator(
+        task_id="render_charts",
+        bash_command=(f"cd {PROJECT} && rm -rf {REPORTS_DIR} && mkdir -p {REPORTS_DIR}"
+                      f" && {DCT} render charts/[!_]*.yml --format html --output {REPORTS_DIR}/{{stem}}.html"
+                      f" && {DCT} render charts/[!_]*.yml --format pdf --output {REPORTS_DIR}/{{stem}}.pdf"
+                      f" && ls -la {REPORTS_DIR}"),
+        env={"TRINO_USER": "charts"}, append_env=True,
+    )
+
+    @task(outlets=[REPORTS])
+    def upload_reports(local_dir: str) -> list[str]:
+        """Copy the rendered boards to s3://reports/<day>/ (RustFS) with the stack's S3 keys."""
+        import os
+        from pathlib import Path
+
+        import boto3
+        from botocore.config import Config
+
+        s3 = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT"], region_name="us-east-1",
+                          aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+                          aws_secret_access_key=os.environ["S3_SECRET_KEY"],
+                          config=Config(s3={"addressing_style": "path"}))
+        day = Path(local_dir).name
+        keys = []
+        for f in sorted(Path(local_dir).iterdir()):
+            content_type = "application/pdf" if f.suffix == ".pdf" else "text/html; charset=utf-8"
+            key = f"{day}/{f.name}"
+            s3.upload_file(str(f), "reports", key, ExtraArgs={"ContentType": content_type})
+            keys.append(f"s3://reports/{key}")
+        return keys
+
+    freshness >> seed >> silver >> gold >> docs >> check >> render >> upload_reports(REPORTS_DIR)
 
 
 px4_transform()

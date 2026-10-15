@@ -7,7 +7,7 @@ INIT_JOBS := rustfs-init lakekeeper-migrate lakekeeper-bootstrap trino-init airf
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps logs config psql s3 trino airflow dbt test
+.PHONY: help env up down reset ps logs config psql s3 trino airflow dbt dct charts-check test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-8s %s\n", $$1, $$2}'
@@ -54,6 +54,12 @@ airflow:  ## Airflow CLI in the scheduler container: make airflow ARGS="dags lis
 
 dbt:  ## dbt in the scheduler container (project dbt/ at /opt/dbt): make dbt ARGS="build -s +stg_logs"
 	$(COMPOSE) exec airflow-scheduler bash -c 'cd /opt/dbt && /opt/dbt-venv/bin/dbt $(or $(ARGS),debug)'
+
+dct:  ## dbt Charts CLI in the charts container: make dct ARGS="render charts/fleet_overview.yml --format text"
+	$(COMPOSE) exec -w /opt/dbt charts /opt/charts-venv/bin/dct $(or $(ARGS),--help)
+
+charts-check:  ## Validate (strict) and render every board; non-zero exit if any board isn't publishable
+	$(COMPOSE) exec -w /opt/dbt charts /opt/charts-venv/bin/python /opt/scripts/check_charts.py
 
 test:  ## Unit tests of the ingestion package (fixtures only: no network, no services)
 	cd ingest && uv run pytest -q

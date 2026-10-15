@@ -1,0 +1,7 @@
+# dbt Charts project config (CLI `dct`). Boards live in charts/ and query gold through the dbt profile,
+# so there is no second set of credentials: profiles.yml reads TRINO_HOST/PORT/USER from env vars.
+sources:
+  lakehouse:
+    type: dbt_profile
+    profile: px4_lakehouse
+    target: dev

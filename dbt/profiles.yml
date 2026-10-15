@@ -10,6 +10,7 @@ px4_lakehouse:
       host: "{{ env_var('TRINO_HOST', 'localhost') }}"
       port: "{{ env_var('TRINO_PORT', '8085') | int }}"
       http_scheme: http
+      cert: true              # verify TLS certs if TLS is ever enabled; no effect over plain http
       database: iceberg       # Trino catalog
       schema: silver          # default schema; models override it with +schema
       threads: 4

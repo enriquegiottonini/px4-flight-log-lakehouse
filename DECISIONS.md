@@ -77,3 +77,15 @@ One entry per decision. Format: context → decision → consequences. Newer dec
   - Airflow's own dependencies are never touched.
   - The same CLI runs on the host (`uv run drone-ingest …`) and in Airflow.
   - Tasks share files (plan files, downloads) through the `airflow-work` volume, which works because LocalExecutor runs every task in the scheduler container.
+
+## D-009: dbt Charts inside the Airflow image, gated by execution (2026-10-15)
+
+- **Context:** the plan had a separate `infrastructure/charts/Dockerfile`. Disk on the development machine is tight (the Airflow image alone is 4+ GB). Also, dbt Charts 0.9.1 can't statically check queries that use filter macros or variables, has no non-executing check for Trino, and `validate` ignores the query-level `ignore:` for that warning.
+- **Decision:**
+  - Install `dbt-charts[trino,server]==0.9.1` in a third venv of the Airflow image (`/opt/charts-venv`), with dbt-core/dbt-trino pinned like `/opt/dbt-venv`. The `charts` service runs that image with `dct serve`; `px4_transform` renders and uploads the reports.
+  - Board queries alias every `ref()` and qualify every column, so boards without filters get the offline column-vs-model check.
+  - `infrastructure/scripts/check_charts.py` is the publish gate: strict validation minus the one known limitation, plus executing every query with `dct render --format text`.
+- **Consequences:**
+  - No second image (+0.67 GB on the existing one).
+  - One gate covers both kinds of boards, verified to fail on a broken column.
+  - Filtered queries are verified by execution rather than statically, until a later dbt Charts version can analyze them.

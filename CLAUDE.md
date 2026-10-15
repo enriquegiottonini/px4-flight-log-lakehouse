@@ -219,7 +219,7 @@ catalog = RestCatalog("px4", uri="http://lakekeeper:8181/catalog", warehouse="px
 | `trino` | `trinodb/trino:483` (`mem_limit: 3g`, heap 2 GB) | 8085 | Phase 3 |
 | `trino-init` | `trinodb/trino:483` (CLI; creates the schemas) | — | Phase 3 |
 | `airflow-init`, `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor` | build `infrastructure/airflow/Dockerfile` from `apache/airflow:3.3.2-python3.12` (image 4.1 GB) | 8080 | Phase 5 |
-| `charts` | build `infrastructure/charts/Dockerfile` (`dbt-charts[trino]==0.9.1`) | 8088 | Phase 8 |
+| `charts` | same image as Airflow; `dct serve` from `/opt/charts-venv` (`dbt-charts[trino,server]==0.9.1`) | 8088 | Phase 8 |
 
 Python versions (checked on PyPI on 2026-10-13): `apache-airflow==3.3.2`, `astronomer-cosmos==1.15.1`, `dbt-trino==1.10.6`, `pyiceberg==0.12.0`, `pyulog==1.2.4`, `dbt-charts==0.9.1` (needs Python 3.10–3.13).
 
@@ -589,18 +589,48 @@ curl -s localhost:8080/api/v2/dags/px4_transform/dagRuns | jq '.dag_runs[] | {da
 
 ### Phase 8: Visualization with dbt Charts
 **Introduces:** dashboards as code (YAML next to the models), `ref()` in queries, offline validation, static rendering.
-- [ ] `charts` service (`dct serve --host 0.0.0.0`, port 8088, Trino user `charts`).
-- [ ] Boards in `dbt/charts/`:
-  - `fleet_overview.yml`: logs and hours per day and class; KPIs.
-  - `flight_behavior.yml`: flight modes; altitude and speed envelope.
-  - `reliability.yml`: crashes, error labels, top messages and firmware adoption.
-  - `pipeline_health.yml`: runs, rejects, bytes downloaded.
-- [ ] `dct validate --strict` passes.
-- [ ] `render_charts` (added to `px4_transform` after `docs_generate`, or scheduled on the `iceberg://px4/gold` asset) uploads HTML and PDF to `s3://reports/<date>/`.
+
+How it's wired:
+- **Project config:** `dbt/dbt_charts.yml` defines one source, `lakehouse` (`type: dbt_profile` → `px4_lakehouse`). The boards reuse the dbt profile, with no second set of credentials, and resolve `{{ ref('mart_…') }}` through `target/manifest.json` (`airflow-init` runs `dbt parse`, so it exists on a fresh clone).
+- **Install:** dbt Charts 0.9.1 sits in a third isolated venv in the Airflow image, `/opt/charts-venv`, with dbt-core/dbt-trino pinned to the same versions as `/opt/dbt-venv`.
+- **The `charts` service reuses that image** (`dct serve`), so there's no extra image on disk. It queries Trino as user `charts`.
+- **Boards in `dbt/charts/`** read only gold tables. SQL does the math, charts only map columns, and every rate states what it's a share of:
+  - `fleet_overview.yml`: KPIs, monthly flight hours by class (stacked area), logs by class, weekly uploads, top flight controllers. Filters: upload period and vehicle class.
+  - `flight_behavior.yml`: share of time per mode (heatmap), multirotor hours by mode, p95 climb, flight envelope table, battery drain per duration band.
+  - `reliability.yml`: crash and label KPIs, weekly share of logs with a PX4-logged error, crash-rated logs per month, firmware adoption, the most widespread messages. Filter: upload period.
+  - `pipeline_health.yml`: run KPIs, ULog files per day, the last 20 runs.
+- **Board convention: alias every `ref()` and qualify every column** (`FROM {{ ref('…') }} AS m … m.logs`). That lets `dct validate` check each column against the dbt model offline.
+- **The quality gate is `infrastructure/scripts/check_charts.py`** (`make charts-check`, and the `check_charts` task):
+  - It fails on any `dct validate --strict` error or warning except `WARN-DBT-QUERY-COLUMNS-INDETERMINATE`.
+  - It runs `dct render --format text` on every board, which executes every query against Trino, and fails on any `WARN-`/`ERR-` code.
+- **`px4_transform` ends with** `docs_generate` → `check_charts` → `render_charts` (HTML + PDF of every board) → `upload_reports` → `s3://reports/<run day>/` (asset `s3://reports`).
+
+Checklist:
+- [x] `charts` service at http://localhost:8088/fleet_overview/ (healthy; the board pages show their filters).
+- [x] Boards in `dbt/charts/`: all four render with real data and **zero render warnings**.
+- [x] `dct validate --strict`: **no errors.** The two boards without filters pass with no findings at all, and every column is checked against the models.
+  - The two boards with filters only raise `WARN-DBT-QUERY-COLUMNS-INDETERMINATE` (11 queries), a 0.9.1 limitation. `check_charts.py` covers those queries by executing them.
+- [x] **The gate fails on a broken board:** renaming a column gave `ERR-DBT-MODEL-COLUMN-MISSING` offline, plus `ERR-WAREHOUSE-RUNTIME` on execution, and a non-zero exit.
+- [x] `render_charts` uploads HTML and PDF to `s3://reports/<date>/`: 8 files (≈ 0.7–0.8 MB HTML, 50–210 KB PDF each). The chain took ~45 s on top of the dbt run.
+
+Findings and gotchas:
+- **DESIGN_PROPOSAL's board skeleton was a guess.** The real format sets the connection with a board-level `source:` that names a `dbt_charts.yml` source (`type: dbt_profile`). Queries are `name: SQL`. Variables use `options.static` and the `filter()` / `filter_date_range()` macros. `title:` is rejected on KPIs (use `label:`).
+- **Static column checks need qualified columns:** an unqualified column is "ambiguous without a schema".
+- **Any templating other than `ref()` blocks the check**, filter macros and bound variables alike. Also, `validate` ignores the query-level `ignore:` for that warning, despite the docs calling it suppressible, and there's no `--ignore-warning` on `validate`. Hence the gate script.
+- **No non-executing check exists for Trino in 0.9.1** (`WARN-WAREHOUSE-CHECK-UNAVAILABLE` with `--warehouse`). Execution is the check.
+- **`cert: true` in `profiles.yml`** silences the "SSL certificate validation" warning in both dbt and dct (dct loads the adapter without the project's `flags:`). It has no effect over plain HTTP.
+- **dct's own design lints are worth keeping:** a pie with more than 5 slices was replaced by a ranked bar; titles that didn't fit were shortened; a cramped table got a wider board frame (`style.frame.width: 1280`).
+
 ```bash
-docker compose exec charts dct validate --strict
-open http://localhost:8088
-docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a change would break
+open http://localhost:8088/fleet_overview/       # also /flight_behavior/ /reliability/ /pipeline_health/
+make charts-check                                # the publish gate
+make dct ARGS="validate --strict charts/flight_behavior.yml"
+make dct ARGS="render charts/reliability.yml --format text"            # rows, ranges, warnings per chart
+make dct ARGS="render charts/fleet_overview.yml --format text --var classes=vtol"
+make dct ARGS="impact vehicle_class"            # which boards read a column (and which it couldn't analyze)
+make dct ARGS="docs charts"                      # the bundled YAML reference
+make airflow ARGS="dags trigger px4_transform"   # dbt → check_charts → render_charts → upload_reports
+make s3 ARGS="ls --recursive s3://reports/"
 ```
 
 ### Phase 9: Integration and presentation
@@ -628,12 +658,11 @@ docker compose exec charts dct impact stg_logs.vehicle_class   # which boards a 
 │   ├── lakekeeper/bootstrap.sh  # bootstrap + warehouse px4 (JSON built from env vars)
 │   ├── trino/{etc,catalog,init}/  # server config, catalogs (iceberg, tpch), schema init SQL
 │   ├── airflow/Dockerfile       # Airflow + drone_ingest + dbt venv (build context: repo root)
-│   ├── charts/Dockerfile
-│   └── scripts/{wait-init.sh,smoke_test.sh}
+│   └── scripts/{wait-init.sh,check_charts.py,smoke_test.sh}
 ├── explore/                     # Phase 1 profiling scripts and reports
 ├── ingest/                      # drone_ingest package: src/drone_ingest/{config,http,storage,catalog,schemas,index,ulog,audit,cli}.py, tests/
 ├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_backfill, px4_maintenance (+ px4_common helpers)
-└── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/
+└── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/  # + dbt_charts.yml (dct project config)
 ```
 
 Rule: files that configure, build or run services go in `infrastructure/`. Code that moves or transforms data (`ingest/`, `dags/`, `dbt/`) stays at the root.

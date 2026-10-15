@@ -1,0 +1,84 @@
+# No variables on this board, so `dct validate --strict` checks every column against the dbt models.
+title: Ingestion pipeline health
+notes: One row per drone_ingest run and entity (audit.ingestion_runs via gold.mart_pipeline_runs).
+source: lakehouse
+
+queries:
+  kpis: |
+    SELECT
+      count(*) AS runs,
+      sum(p.records_inserted) AS inserted,
+      sum(p.records_rejected) AS rejected,
+      sum(CASE WHEN p.entity = 'ulog_fetch' THEN p.bytes ELSE 0 END) / 1e6 AS ulog_mb
+    FROM {{ ref('mart_pipeline_runs') }} AS p
+  last_index_load: |
+    SELECT max(p.finished_at) AS last_load
+    FROM {{ ref('mart_pipeline_runs') }} AS p
+    WHERE p.entity = 'logs_index' AND p.status = 'success'
+  ulogs_by_day: |
+    SELECT CAST(p.started_at AS date) AS day, p.entity AS step, sum(p.records_inserted) AS ulogs
+    FROM {{ ref('mart_pipeline_runs') }} AS p
+    WHERE p.entity IN ('ulog_fetch', 'ulog_parse')
+    GROUP BY 1, 2 ORDER BY 1, 2
+  recent_runs: |
+    SELECT p.started_at, p.entity, p.status, p.records_read, p.records_inserted, p.records_rejected,
+           p.duration_s, p.run_id
+    FROM {{ ref('mart_pipeline_runs') }} AS p
+    ORDER BY p.started_at DESC
+    LIMIT 20
+
+charts:
+  k_runs:
+    label: Recorded runs
+    query: kpis
+    type: kpi
+    value: runs
+    style: {value: {format: integer}}
+  k_inserted:
+    label: Records inserted (index rows + parsed ULogs)
+    query: kpis
+    type: kpi
+    value: inserted
+    style: {value: {format: integer}}
+  k_rejected:
+    label: Records rejected or failed
+    query: kpis
+    type: kpi
+    value: rejected
+    style: {value: {format: integer}}
+  k_mb:
+    label: ULog MB downloaded
+    query: kpis
+    type: kpi
+    value: ulog_mb
+    style: {value: {format: integer}}
+  ulogs:
+    title: ULog files fetched and parsed per day
+    subtitle: Capped by PX4_MAX_ULOGS_PER_RUN in this environment; a full day is ~500 logs.
+    query: ulogs_by_day
+    type: bar
+    x: day
+    y: ulogs
+    color: step
+    x_label: Day
+    y_label: ULog files
+    style: {orientation: vertical, stack: none, number_format: ",.0f"}
+  runs:
+    title: Last 20 runs
+    query: recent_runs
+    type: table
+    style:
+      columns:
+        started_at: {label: Started (UTC), format: "%d %b %H:%M"}
+        entity: {label: Step}
+        status: {label: Status}
+        records_read: {label: Read, format: integer, align: right}
+        records_inserted: {label: Inserted, format: integer, align: right}
+        records_rejected: {label: Rejected, format: integer, align: right}
+        duration_s: {label: Seconds, format: ",.1f", align: right}
+        run_id: {label: Run id}
+
+rows:
+  - cols: [k_runs, k_inserted, k_rejected, k_mb]
+  - ulogs
+  - runs

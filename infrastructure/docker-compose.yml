@@ -43,6 +43,7 @@ x-airflow-common: &airflow-common
   volumes:
     - ../dags:/opt/airflow/dags:ro
     - ../dbt:/opt/dbt  # read-write: dbt writes target/, logs/, dbt_packages/ here
+    - ./scripts:/opt/scripts:ro  # check_charts.py (Phase 8)
     - airflow-logs:/opt/airflow/logs
     - airflow-work:/opt/airflow/work
   user: "50000:0"
@@ -221,7 +222,8 @@ services:
 
   # --- Phase 5: orchestration (Airflow 3, LocalExecutor) ---------------------------
 
-  # Runs once: creates/upgrades Airflow's tables, the CDN pool, and dbt packages (Cosmos needs them to parse)
+  # Runs once: Airflow's tables, the CDN pool, dbt packages (Cosmos parses with them) and dbt's manifest
+  # (dbt Charts resolves ref() through target/manifest.json)
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
@@ -229,7 +231,8 @@ services:
       - -c
       - >-
         airflow db migrate && airflow pools set px4_pool 4 "PX4 CDN download/parse concurrency"
-        && (cd /opt/dbt && /opt/dbt-venv/bin/dbt deps --quiet) && airflow version
+        && (cd /opt/dbt && /opt/dbt-venv/bin/dbt deps --quiet && /opt/dbt-venv/bin/dbt parse --quiet)
+        && airflow version
     depends_on:
       postgres:
         condition: service_healthy
@@ -277,6 +280,38 @@ services:
       timeout: 30s
       retries: 10
       start_period: 30s
+
+  # --- Phase 8: dashboards (dbt Charts) -------------------------------------------------
+
+  # Live boards on http://localhost:8088/<board>/ (e.g. /fleet_overview/). Same image as Airflow:
+  # dct lives in /opt/charts-venv, so no extra image on disk. Queries Trino as user "charts".
+  charts:
+    image: px4-lakehouse/airflow:${AIRFLOW_TAG}
+    entrypoint: ["/opt/charts-venv/bin/dct"]
+    command: ["serve", "--host", "0.0.0.0", "--port", "8088", "--project-dir", "/opt/dbt"]
+    user: "50000:0"
+    environment:
+      DBT_PROFILES_DIR: /opt/dbt
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+      TRINO_USER: charts
+    volumes:
+      - ../dbt:/opt/dbt
+      - ./scripts:/opt/scripts:ro
+    ports:
+      - "127.0.0.1:8088:8088"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8088/fleet_overview/"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      trino:
+        condition: service_healthy
+      airflow-init:  # dbt parse -> target/manifest.json
+        condition: service_completed_successfully
+    restart: unless-stopped
 
 volumes:
   postgres-data:

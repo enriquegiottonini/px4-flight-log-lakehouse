@@ -1,0 +1,102 @@
+# No variables on this board, so `dct validate --strict` checks every column against the dbt models.
+title: How PX4 vehicles fly
+notes: >
+  Flight modes come from every log's mode timeline (index). Altitude, speed and battery come only from logs whose
+  ULog was downloaded and parsed (D-004), so they cover far fewer flights. Simulator (SITL) logs are excluded.
+source: lakehouse
+style:
+  frame:
+    width: 1280  # room for the 7-column envelope table
+
+queries:
+  mode_share: |
+    SELECT u.vehicle_class, u.mode_name, u.share_of_class_time
+    FROM {{ ref('mart_flight_mode_usage') }} AS u
+    WHERE u.share_of_class_time >= 0.02
+    ORDER BY u.vehicle_class, u.share_of_class_time DESC
+  mode_hours_multirotor: |
+    SELECT u.mode_name, u.hours
+    FROM {{ ref('mart_flight_mode_usage') }} AS u
+    WHERE u.vehicle_class = 'multirotor'
+    ORDER BY u.hours DESC
+    LIMIT 10
+  envelope: |
+    SELECT e.vehicle_class, e.flights_with_telemetry, e.p95_alt_range_m, e.avg_alt_range_m,
+           e.p95_max_h_speed_ms, e.avg_max_h_speed_ms, e.avg_distance_km
+    FROM {{ ref('mart_flight_envelope') }} AS e
+    ORDER BY e.flights_with_telemetry DESC
+  battery: |
+    SELECT b.duration_band, b.duration_band_order, b.vehicle_class, b.avg_battery_pct_per_min, b.flights
+    FROM {{ ref('mart_battery_efficiency') }} AS b
+    ORDER BY b.duration_band_order, b.vehicle_class
+
+charts:
+  mode_heatmap:
+    title: Share of each class's flight time spent in each mode
+    subtitle: Modes under 2 % of a class's time are hidden. Each class's shares sum to 100 %.
+    query: mode_share
+    type: heatmap
+    x: vehicle_class
+    y: mode_name
+    color: share_of_class_time
+    x_label: Vehicle class
+    y_label: Flight mode
+  multirotor_modes:
+    title: Multirotor hours by flight mode (top 10)
+    query: mode_hours_multirotor
+    type: bar
+    x: mode_name
+    y: hours
+    sort: {by: hours, order: desc}
+    x_label: Flight mode
+    y_label: Hours
+    style: {number_format: ",.0f"}
+  altitude:
+    title: p95 climb by vehicle class
+    subtitle: From parsed ULogs only; see the table for how many flights each bar is based on.
+    query: envelope
+    type: bar
+    x: vehicle_class
+    y: p95_alt_range_m
+    sort: {by: p95_alt_range_m, order: desc}
+    x_label: Vehicle class
+    y_label: Metres (p95 of max-min altitude per flight)
+    style: {number_format: ",.0f"}
+  envelope_table:
+    title: Flight envelope from parsed ULogs
+    query: envelope
+    type: table
+    style:
+      columns:
+        vehicle_class: {label: Class}
+        flights_with_telemetry: {label: Flights, format: integer, align: right}
+        p95_alt_range_m: {label: p95 climb (m), format: ",.0f", align: right}
+        avg_alt_range_m: {label: Avg climb (m), format: ",.0f", align: right}
+        p95_max_h_speed_ms: {label: p95 top speed (m/s), format: ",.1f", align: right}
+        avg_max_h_speed_ms: {label: Avg top speed (m/s), format: ",.1f", align: right}
+        avg_distance_km: {label: Avg distance (km), format: ",.2f", align: right}
+  battery_drain:
+    title: Battery used per minute, by flight duration
+    subtitle: Percentage points of battery per minute of flight; parsed ULogs with a battery sensor only.
+    query: battery
+    type: bar
+    x: duration_band
+    y: avg_battery_pct_per_min
+    color: vehicle_class
+    sort: {by: duration_band_order, order: asc}
+    x_label: Flight duration
+    y_label: "% battery per minute"
+    style: {orientation: vertical, stack: none, number_format: ",.1f"}
+
+rows:
+  - cols:
+      - width: "55%"
+        rows: [mode_heatmap]
+      - width: "45%"
+        rows: [multirotor_modes]
+  - cols:
+      - width: "40%"
+        rows: [altitude]
+      - width: "60%"
+        rows: [envelope_table]
+  - battery_drain
