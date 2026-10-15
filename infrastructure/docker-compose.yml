@@ -221,13 +221,15 @@ services:
 
   # --- Phase 5: orchestration (Airflow 3, LocalExecutor) ---------------------------
 
-  # Runs once: creates/upgrades Airflow's tables in the airflow database and the CDN pool
+  # Runs once: creates/upgrades Airflow's tables, the CDN pool, and dbt packages (Cosmos needs them to parse)
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
     command:
       - -c
-      - airflow db migrate && airflow pools set px4_pool 4 "PX4 CDN download/parse concurrency" && airflow version
+      - >-
+        airflow db migrate && airflow pools set px4_pool 4 "PX4 CDN download/parse concurrency"
+        && (cd /opt/dbt && /opt/dbt-venv/bin/dbt deps --quiet) && airflow version
     depends_on:
       postgres:
         condition: service_healthy

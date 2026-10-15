@@ -10,8 +10,10 @@ FROM apache/airflow:${AIRFLOW_TAG}
 ARG AIRFLOW_VERSION=3.3.2
 ARG PYTHON_VERSION=3.12
 
-# Providers in Airflow's own environment, pinned by Airflow's official constraints file
+# Providers + Cosmos (renders dbt models as tasks; Phase 7) in Airflow's own environment, pinned by
+# Airflow's official constraints file. Cosmos calls the dbt binary in /opt/dbt-venv, not a library.
 RUN pip install --no-cache-dir "apache-airflow==${AIRFLOW_VERSION}" "apache-airflow-providers-trino" \
+      "astronomer-cosmos==1.15.1" \
       --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 USER root

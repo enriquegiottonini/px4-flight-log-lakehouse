@@ -551,12 +551,40 @@ make trino SQL="SELECT * FROM silver.snap_vehicles WHERE dbt_valid_to IS NOT NUL
 ```
 
 ### Phase 7: dbt inside Airflow (Cosmos)
-**Introduces:** one dbt model = one Airflow task; a DAG triggered by assets.
-- [ ] DAG `px4_transform`, triggered by the `bronze.*` assets. Runs `source freshness` → `seed` → silver group → gold group → `docs generate` → `render_charts`, with `max_active_runs=1`.
-- [ ] A test with `error` severity stops the DAG; one with `warn` doesn't.
+**Introduces:** one dbt model = one Airflow task (Cosmos `DbtTaskGroup`); a DAG triggered by assets instead of a clock.
+
+How it's wired:
+- **Cosmos 1.15.1** sits in Airflow's own environment, installed through the image with Airflow's constraints. It calls `/opt/dbt-venv/bin/dbt` as a **subprocess**.
+  - Both `ExecutionConfig` and `RenderConfig` need `invocation_mode=InvocationMode.SUBPROCESS`. Cosmos' default in-process runner can't use a dbt binary from another venv.
+- **Rendering:** `LoadMode.DBT_LS` runs `dbt ls` at parse time, and Cosmos caches the result until project files change. Then `TestBehavior.AFTER_EACH` gives each model a `<model>.run` task followed by a `<model>.test` task.
+- **`airflow-init` runs `dbt deps`,** so packages exist before Cosmos parses the project (`install_dbt_deps=False`, so tasks don't hit the network).
+- **Assets:**
+  - The transform is scheduled on `bronze.logs_index_raw | bronze.telemetry_raw | bronze.log_messages_raw`: any update starts a run.
+  - It emits one layer-level asset, `iceberg://px4/gold`, which Phase 8 can schedule on (Cosmos' per-model `emit_datasets` is off).
+- **Limits:**
+  - `max_active_runs=1`, so two runs never write the same tables.
+  - `max_active_tasks=4`, because each dbt task is its own ~200 MB process.
+  - `retries=0`, since dbt failures are deterministic.
+
+Checklist:
+- [x] DAG `px4_transform` (42 tasks): `source_freshness` → `seed` → `silver` group (25 tasks, incl. `snap_vehicles_snapshot`) → `gold` group (14) → `docs_generate`. ~46 s per run.
+  - `render_charts` is added in Phase 8, when dbt Charts exists.
+- [x] **Triggered by assets:** a 1-day / 2-log backfill finished, and Airflow started `asset_triggered__…` on its own. The run lists `bronze.telemetry_raw` and `bronze.log_messages_raw` from `px4_backfill.backfill_day` as its triggers.
+  - The incremental models picked up only the new rows: silver telemetry = bronze telemetry = 10,049 rows / 78 logs.
+- [x] **An `error` test stops the DAG:** a temporary always-failing test on `stg_logs` failed `silver.stg_logs.test`, and the 29 downstream tasks (all of gold, `docs_generate`) became `upstream_failed`.
+- [x] **A `warn` test doesn't:** a temporary always-failing `warn` test on `dim_date` logged `WARN 1 … PASS=2 WARN=1 ERROR=0`, and the task succeeded. Both tests were then removed, and a clean run was green.
+
+Findings and gotchas:
+- **`RenderConfig` has its own `invocation_mode`** (for the parse-time `dbt ls`). Setting it only on `ExecutionConfig` still fails with "…not the same as the system dbt executable path".
+- **Asset events that happen while a DAG is paused don't queue a run:** unpausing `px4_transform` started nothing until the next bronze update.
+- **DAG states left after Phase 7:** `px4_transform` is **unpaused**, which is how it's meant to run; the ingestion, backfill and maintenance DAGs stay paused.
+
 ```bash
-# In the UI: Assets → bronze.logs_index_raw → see the consuming DAG
-# px4_transform Graph view: each model is a run+test task
+open http://localhost:8080/dags/px4_transform        # Graph: silver/gold groups, each model = run + test
+# UI → Assets: bronze.* (producers: ingest/backfill tasks) and the consuming px4_transform; iceberg://px4/gold
+make airflow ARGS="dags trigger px4_transform"                     # manual run
+make airflow ARGS="dags trigger px4_backfill -c '{\"start_date\": \"2026-10-10\", \"end_date\": \"2026-10-10\", \"max_ulogs\": 2}'"   # → transform starts by itself
+curl -s localhost:8080/api/v2/dags/px4_transform/dagRuns | jq '.dag_runs[] | {dag_run_id, run_type, state}'
 ```
 
 ### Phase 8: Visualization with dbt Charts
@@ -568,7 +596,7 @@ make trino SQL="SELECT * FROM silver.snap_vehicles WHERE dbt_valid_to IS NOT NUL
   - `reliability.yml`: crashes, error labels, top messages and firmware adoption.
   - `pipeline_health.yml`: runs, rejects, bytes downloaded.
 - [ ] `dct validate --strict` passes.
-- [ ] `render_charts` uploads HTML and PDF to `s3://reports/<date>/`.
+- [ ] `render_charts` (added to `px4_transform` after `docs_generate`, or scheduled on the `iceberg://px4/gold` asset) uploads HTML and PDF to `s3://reports/<date>/`.
 ```bash
 docker compose exec charts dct validate --strict
 open http://localhost:8088
