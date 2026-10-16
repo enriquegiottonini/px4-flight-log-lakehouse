@@ -8,7 +8,7 @@ A local lakehouse, in Docker Compose, built on the **public PX4 Flight Review lo
 
 Everything runs on one laptop (8 GB RAM for Docker), and every step is visible in the Airflow UI.
 
-> Class project: *prototipo con Docker, API y bases de datos* (`definition/task.txt`). Build log and per-phase details: [CLAUDE.md](CLAUDE.md). Decisions: [DECISIONS.md](DECISIONS.md). Original design: [DESIGN_PROPOSAL.md](DESIGN_PROPOSAL.md). Class presentation: [presentation/](presentation/).
+> Class project: *prototipo con Docker, API y bases de datos* (Docker, an external API, a DBMS and a visualization). Build log and per-phase details: [CLAUDE.md](CLAUDE.md). Decisions: [DECISIONS.md](DECISIONS.md). Source profiling: [docs/reports/](docs/reports/). Class presentation: [presentation/](presentation/).
 
 ## Architecture
 

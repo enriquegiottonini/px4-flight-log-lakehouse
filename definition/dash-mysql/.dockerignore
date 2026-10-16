@@ -1,5 +1,0 @@
-.env
-.env.*
-mysql/
-__pycache__/
-README.md

@@ -1,12 +1,12 @@
 # Guion de la presentación (~7 min)
 
 Prototipo: **lakehouse de logs de vuelo PX4** con Docker, una API externa, Iceberg/Trino y dashboards.
-Cada bloque responde a uno de los puntos que pide `definition/task.txt`.
+Cada bloque responde a uno de los puntos que pide la actividad.
 
-| # | Bloque (task.txt) | Tiempo | En pantalla |
+| # | Bloque (actividad) | Tiempo | En pantalla |
 | --- | --- | --- | --- |
 | 1 | La problemática | 0:45 | README (título) |
-| 2 | La API y los datos | 1:00 | `explore/reports/dbinfo_profile.md` |
+| 2 | La API y los datos | 1:00 | `docs/reports/dbinfo_profile.md` |
 | 3 | Arquitectura y contenedores | 1:30 | Diagrama del README + `make ps` |
 | 4 | Diseño de la base de datos | 1:30 | Diagrama de abajo + Lakekeeper UI |
 | 5 | Demostración en vivo | 2:00 | Airflow → RustFS → Trino → dashboard |

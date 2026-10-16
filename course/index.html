@@ -523,7 +523,7 @@ same log_id, new hash    → insert, _change_type = 'update'   (history is kept)
 same log_id, same hash   → skip</pre>
   <p>Bronze is <b>append-only</b>: an edited record adds a new row and never overwrites the old one. Silver later keeps only the latest version (lesson 10). The first load (the <b>bootstrap</b>) only takes records uploaded on or after <code>INDEX_START_DATE</code> (2025-01-01).</p>
   <h4>Profiling: know the defects</h4>
-  <p>Profiling the source (Phase 1, <code>explore/</code>) found real defects that silver must clean:</p>
+  <p>Profiling the source (Phase 1, reports in <code>docs/reports/</code>) found real defects that silver must clean:</p>
   <ul>
     <li><code>wind_speed = -1</code> means "no data" (~99 %).</li>
     <li><code>airframe_type</code> is sometimes an integer instead of a name.</li>
@@ -535,8 +535,8 @@ same log_id, same hash   → skip</pre>
   <h3>In this repo</h3>
   <ul class="files">
     <li><a href="../ingest/src/drone_ingest/index.py">ingest/src/drone_ingest/index.py</a>: <code>snapshot_index</code> (the conditional GET) and <code>load_index</code> (the hash diff).</li>
-    <li><a href="../explore/reports/dbinfo_profile.md">explore/reports/dbinfo_profile.md</a>: the full profile of every field.</li>
-    <li><a href="../explore/reports/ulog_sizes.md">explore/reports/ulog_sizes.md</a>: ULog sizes, which drove the 1-day raw window.</li>
+    <li><a href="../docs/reports/dbinfo_profile.md">docs/reports/dbinfo_profile.md</a>: the full profile of every field.</li>
+    <li><a href="../docs/reports/ulog_sizes.md">docs/reports/ulog_sizes.md</a>: ULog sizes, which drove the 1-day raw window.</li>
     <li><a href="../CLAUDE.md">CLAUDE.md</a>, sections 3 and 4: the API contract, the defects and the daily diff.</li>
   </ul>
 

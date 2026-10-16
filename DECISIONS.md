@@ -1,10 +1,10 @@
 # Decision log
 
-One entry per decision. Format: context → decision → consequences. Newer decisions supersede older ones and `DESIGN_PROPOSAL.md`.
+One entry per decision. Format: context → decision → consequences. Newer decisions supersede older ones and the original design proposal.
 
 ## D-001: Ingestion runs inside the Airflow image (2026-10-13)
 
-- **Context:** `task.txt` mentions an "API-Ubuntu" container for data acquisition. That container belongs to the instructor's reference example, not to the requirements.
+- **Context:** the assignment mentions an "API-Ubuntu" container for data acquisition. That container belongs to the instructor's reference example, not to the requirements.
 - **Decision:** the `drone_ingest` package is installed in the Airflow image and runs as Airflow tasks. There is no separate Ubuntu container.
 - **Consequences:** one service fewer. The presentation explains that the Airflow workers play the API-consumer role.
 

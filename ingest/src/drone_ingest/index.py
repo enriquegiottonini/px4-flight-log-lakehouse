@@ -146,7 +146,7 @@ def snapshot_index(settings: Settings, catalog: RestCatalog, run_id: str) -> dic
     }
     s3 = storage.s3_client(settings)
     storage.put_file(s3, settings.landing_bucket, folder + "dbinfo.json.gz", dest)
-    # The manifest goes last: a folder without it is an incomplete run (DESIGN_PROPOSAL, Ingesta)
+    # The manifest goes last: a folder without it is an incomplete run
     storage.put_bytes(s3, settings.landing_bucket, folder + "_manifest.json", json.dumps(manifest, indent=1).encode())
     dest.unlink()  # old snapshots expire by themselves: RustFS lifecycle rule on px4/index/ (setup.py)
 

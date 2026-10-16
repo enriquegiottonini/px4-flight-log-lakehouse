@@ -1,9 +1,7 @@
 # CLAUDE.md: PX4 Flight-Log Lakehouse
 
 This file is the project's **build plan** and the **working rules** for Claude Code.
-- Original design: `DESIGN_PROPOSAL.md` (architecture still applies; section 3 here replaces its API contract).
-- Assignment: `definition/task.txt`.
-- Instructor's reference example: `definition/dash-mysql/`.
+- Assignment: a class prototype with Docker (≥ 2 containers) that consumes an external API, stores the data in a DBMS and visualizes it, presented in class. (The assignment text, the instructor's Dash + MySQL example and the original `DESIGN_PROPOSAL.md` were removed in the post-Phase 10 cleanup; they're in git history at `a8425b9`.)
 - Decision log: `DECISIONS.md` (one entry per decision, format D-NNN).
 
 ## 1. Working rules (for Claude)
@@ -17,7 +15,7 @@ This file is the project's **build plan** and the **working rules** for Claude C
 - Be polite to PX4: follow the retry and backoff rules of `download_logs.py` (section 3.4), use bounded concurrency and an identifiable User-Agent.
 - Must run on an 8 GB RAM machine: Trino with `-Xmx2G`, Airflow with `LocalExecutor`.
 
-## 2. Mapping to the assignment (`task.txt`)
+## 2. Mapping to the assignment
 
 | Assignment requirement | How it is met here |
 | --- | --- |
@@ -80,7 +78,7 @@ PX4 is the most widely used open-source drone autopilot. Flight Review (`review.
 - `mav_type` has 24 values, including `VTOL reserved 3/4/5`, `Rocket`, `Submarine` and `Generic`. Classes come from the `mav_type_classes` seed.
 - Volume: median **~590 logs/day** (p95 858, max 1,052) over the last 90 days; 314,800 logs since 2025-01-01.
 
-ULog defects (from the 3 inspected files; full report in `explore/reports/ulog_inspection.md`):
+ULog defects (from the 3 inspected files; full report in `docs/reports/ulog_inspection.md`):
 - **Topics vary by firmware/hardware:** `battery_status`, `vehicle_air_data` or the GPS topics can be missing. The parser emits a null column and counts the gap.
 - **Battery stuck at 0** (no sensor): if `max(remaining) == 0`, treat battery as null.
 - **Timestamps are µs since boot.** UTC comes from `vehicle_gps_position.time_utc_usec` when a GPS fix exists; otherwise `ts_utc` is null and only `t_boot_s` is kept.
@@ -109,7 +107,7 @@ curl -sSI https://cdn.logs.px4.io/<log_id>.ulg | grep -i content-length
 pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 ```
 
-## 4. Changes to `DESIGN_PROPOSAL.md` after reviewing the source
+## 4. Changes to the original design (`DESIGN_PROPOSAL.md`, removed in the cleanup) after reviewing the source
 
 | Topic | Original proposal | Now | Decision |
 | --- | --- | --- | --- |
@@ -131,7 +129,7 @@ pip install pyulog==1.2.4 && ulog_info <file>.ulg && ulog_messages <file>.ulg
 4. **First run (bootstrap)** inserts only records with `log_date >= INDEX_START_DATE` (default `2025-01-01`, ~200k rows, a few seconds). Widening the window later just re-diffs.
 5. **ULogs** are fetched once per `log_id` (anti-join with `audit.ulog_downloads`). Their window is **one full UTC day of uploads, `[ULOG_START_DATE, ULOG_END_DATE)`**, default `[today − 1, today)` (D-004). It's independent of the index window. Because `log_date` is the upload date, new `log_id`s always appear under recent dates.
 
-**Disk budget (D-004), measured in Phase 1** (`explore/reports/ulog_sizes.md`): ~512 logs/day × **18 MB mean** ≈ **9.3 GB/day** of raw ULog.
+**Disk budget (D-004), measured in Phase 1** (`docs/reports/ulog_sizes.md`): ~512 logs/day × **18 MB mean** ≈ **9.3 GB/day** of raw ULog.
 - A 7-day window would be ≈ 65 GB, but the development machine has ~13 GiB free. **Decision (D-004, revised): keep raw ULogs for a 1-day window only.**
 - Window `[today − 1, today)`, and a RustFS lifecycle rule expires `landing/px4/ulog/` objects after 1 day (Phase 10; until then, `ULOG_RETENTION_DAYS=1` and a purge task): landing holds about one day of `.ulg` files (~9–10 GB). With `log_date >= today − 1`, today's partial uploads would also be fetched, so ~1.4 days would coexist.
 - **Expiry is asynchronous:** RustFS's scanner deletes expired objects in the background, so two days can briefly coexist (~18 GB). The guard below is the safety net. (Phases 4–9 purged *before* each day's downloads instead.)
@@ -284,6 +282,9 @@ Phases 2–9 describe the stack as it was at their tag; Phase 10 simplified it (
 
 ### Phase 1: Explore the source (no Docker)
 **Introduces:** the real API contract, the ULog format and `pyulog`. Fixtures are produced here.
+
+> The `explore/` scripts below were removed in the post-Phase 10 cleanup (they're in git history at `a8425b9`). Their reports live in `docs/reports/`, and the fixtures they generated in `ingest/tests/fixtures/`. The command block is historical.
+
 - [x] `explore/fetch_index.py`: conditional GET of the index. The second run gets a 304 (0 bytes) through the 302 redirect.
 - [x] `explore/profile_dbinfo.py` → `explore/reports/dbinfo_profile.md`: per-field counts, types, sentinels and distributions. New defects were added to section 3.3.
 - [x] `explore/ulog_sizes.py` → `explore/reports/ulog_sizes.md`: `HEAD` on 200 recent logs. The mean is 18 MB, not 8, so the section 4 budget is updated (decision pending).
@@ -620,7 +621,7 @@ Checklist:
 - [x] `render_charts` uploads HTML and PDF to `s3://reports/<date>/`: 8 files (≈ 0.7–0.8 MB HTML, 50–210 KB PDF each). The chain took ~45 s on top of the dbt run.
 
 Findings and gotchas:
-- **DESIGN_PROPOSAL's board skeleton was a guess.** The real format sets the connection with a board-level `source:` that names a `dbt_charts.yml` source (`type: dbt_profile`). Queries are `name: SQL`. Variables use `options.static` and the `filter()` / `filter_date_range()` macros. `title:` is rejected on KPIs (use `label:`).
+- **The original design's board skeleton was a guess.** The real format sets the connection with a board-level `source:` that names a `dbt_charts.yml` source (`type: dbt_profile`). Queries are `name: SQL`. Variables use `options.static` and the `filter()` / `filter_date_range()` macros. `title:` is rejected on KPIs (use `label:`).
 - **Static column checks need qualified columns:** an unqualified column is "ambiguous without a schema".
 - **Any templating other than `ref()` blocks the check**, filter macros and bound variables alike. Also, `validate` ignores the query-level `ignore:` for that warning, despite the docs calling it suppressible, and there's no `--ignore-warning` on `validate`. Hence the gate script.
 - **No non-executing check exists for Trino in 0.9.1** (`WARN-WAREHOUSE-CHECK-UNAVAILABLE` with `--warehouse`). Execution is the check.
@@ -652,7 +653,7 @@ Checklist:
   - **PASSED from a clean clone in 306 s.** The clone ran as a separate Compose project (`COMPOSE_PROJECT_NAME=px4-smoke`) with empty volumes. The main stack was stopped with `make down` (volumes kept), then restored.
   - `cp .env.example .env` (the original plan) doesn't work: `change-me-fernet` isn't a valid Fernet key, so the script uses `make env`.
 - [x] `README.md`: what it is, architecture diagram, services and ports, quick start, pipeline, commands, configuration, smoke test (incl. the clean-clone procedure), troubleshooting.
-- [x] Presentation script `presentation/guion.md` (Spanish, ~7 min, one block per `task.txt` item):
+- [x] Presentation script `presentation/guion.md` (Spanish, ~7 min, one block per assignment item):
   - [x] Problem statement.
   - [x] API: `dbinfo` + ULog, volume and defects.
   - [x] Architecture and the role of each container.
@@ -749,9 +750,8 @@ curl -s localhost:8181/management/v1/warehouse | python3 -m json.tool | grep -A3
 
 ```text
 .
-├── CLAUDE.md  DECISIONS.md  DESIGN_PROPOSAL.md  README.md
+├── CLAUDE.md  DECISIONS.md  README.md
 ├── Makefile  .env.example       # entry points: `make up`; .env sets COMPOSE_FILE and secrets
-├── definition/                  # assignment + instructor example (do not modify)
 ├── infrastructure/              # everything that runs the platform (no business logic)
 │   ├── docker-compose.yml       # 8 containers; relative paths resolve from this folder
 │   ├── portal.html              # start page: every web UI + reachability check (`make portal`)
@@ -760,7 +760,7 @@ curl -s localhost:8181/management/v1/warehouse | python3 -m json.tool | grep -A3
 │   ├── trino/{etc,catalog}/     # server config, catalogs (iceberg, tpch)
 │   ├── airflow/Dockerfile       # Airflow + drone_ingest/dbt/charts venvs (build context: repo root)
 │   └── scripts/{check_charts.py,smoke_test.sh}
-├── explore/                     # Phase 1 profiling scripts and reports
+├── docs/reports/                # Phase 1 profiling reports (index fields, ULog sizes, ULog contents)
 ├── ingest/                      # drone_ingest package: src/drone_ingest/{config,http,storage,catalog,schemas,index,ulog,audit,cli}.py, tests/
 ├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_transform, px4_maintenance (+ px4_common helpers)
 ├── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/  # + dbt_charts.yml (dct project config)
