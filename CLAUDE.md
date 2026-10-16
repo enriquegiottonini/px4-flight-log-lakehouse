@@ -377,7 +377,7 @@ make trino SQL="show schemas"
 make s3 ARGS="ls --recursive s3://lakehouse/bronze/"             # data/ + metadata/ per table
 open http://localhost:8181/ui/                     # Lakekeeper UI: warehouse → namespaces → tables → snapshots
 curl -s localhost:8181/management/v1/warehouse | jq             # warehouse + storage profile (secret not returned)
-curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | jq   # REST config handshake; overrides.prefix = warehouse id
+curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | jq   # REST config handshake; defaults.prefix = warehouse id
 curl -s localhost:8181/catalog/v1/<prefix>/namespaces | jq      # Iceberg REST API, as Trino/PyIceberg see it
 make psql DB=lakekeeper                                         # \dt: Lakekeeper's own tables (the catalog state)
 open http://localhost:8085/ui/                     # Trino query UI (any user name, no password)
@@ -705,7 +705,7 @@ Checklist:
   - **Pipeline:**
     - `{"max_ulogs": 3}`: the index answered 304, so `load_index` was skipped; 3 ULogs were fetched and parsed. `px4_transform` auto-ran (1 m 49 s), published 8 reports, and charts-check gave 4× OK.
     - `{"day": "2026-10-10", "max_ulogs": 2}`: window `[2026-10-10, 2026-10-11)`, 2 ULogs fetched and parsed.
-- [x] Smoke test from a clean copy of the working tree (separate project `px4-smoke`, empty volumes): **PASSED in 279 s** (Phase 9: 306 s). All 8 containers came up from zero in ~35 s, both asset-triggered transform runs succeeded, silver = bronze, and the 8 reports were published. The smoke project was then deleted (`down -v`), and the main stack restored with its data and DAG states.
+- [x] Smoke test from a clean copy of the working tree (separate project `px4-smoke`, empty volumes): **PASSED in 270 s on the rebuilt image** (finding 8; Phase 9: 306 s). A fresh install's `audit` namespace holds only `ingestion_runs` and `ulog_downloads`. All 8 containers came up from zero in ~35 s, both asset-triggered transform runs succeeded, silver = bronze, and the 8 reports were published. The smoke project was then deleted (`down -v`), and the main stack restored with its data and DAG states.
 
 **Findings and gotchas:**
 1. **Namespace protection protects nothing here.**
@@ -722,6 +722,18 @@ Checklist:
 5. **Smoke-test race.** Airflow stamps a DAG run's `end_date` *after* its last task finishes, and an idle `px4_transform` can start in between (seen: 134 ms earlier). The waiter now anchors on the ingestion's last task `end_date`. Phase 9 passed only because there the transform had been queued.
 6. **`airflow standalone`** runs every component in one container, so the execution API URL is `http://localhost:8080/execution/`. A removed DAG file leaves the DAG listed in the DB until `airflow dags delete`.
 7. **`docker compose up --wait` accepts an exited one-shot job only if a service depends on it with `service_completed_successfully`.** Every job here is such a dependency, so the `wait-init.sh` script is gone.
+8. **Stale image: the containers ran the old `drone_ingest`.**
+   - The Airflow image *bakes in* the package (`COPY ingest/src`), and `make up` never rebuilt it.
+   - After the code removals, the first in-container checks and the first smoke test still ran the old package, which recreated `audit.index_snapshots`. Only the unit tests had run the new code.
+   - Found while preparing the course. Fixes:
+     - `make up` now runs `up --build`, which is cached: ~20 s when nothing changed.
+     - The Dockerfile installs the slow, stable layers first: dbt venv, charts venv, then the ingest *dependencies* from the lockfile, and the ingest *code* last. A code change now rebuilds in seconds instead of reinstalling every venv.
+   - Re-verified on the rebuilt image:
+     - The CLI lists only the 6 remaining commands.
+     - The table is no longer recreated.
+     - A capped ingest triggers the transform, and both succeed.
+     - The clean-copy smoke test passes again (below).
+9. **`make dbt ARGS="… --vars '{…}'"` never worked** (found while writing the course). The target wrapped `ARGS` in `bash -c '…'`, so any single quote inside `ARGS` ended the string. It now runs `docker compose exec -w /opt/dbt airflow /opt/dbt-venv/bin/dbt $(ARGS)` with no inner shell, and the Phase 6 example works.
 
 ```bash
 make ps                                   # 8 containers: 6 healthy + setup, lakekeeper-migrate Exited (0)
@@ -752,6 +764,7 @@ curl -s localhost:8181/management/v1/warehouse | python3 -m json.tool | grep -A3
 ├── ingest/                      # drone_ingest package: src/drone_ingest/{config,http,storage,catalog,schemas,index,ulog,audit,cli}.py, tests/
 ├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_transform, px4_maintenance (+ px4_common helpers)
 ├── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/  # + dbt_charts.yml (dct project config)
+├── course/index.html            # hands-on course: 16 lessons + labs, every command verified (`make course`)
 └── presentation/                # class script (Spanish) + plan B reports
 ```
 

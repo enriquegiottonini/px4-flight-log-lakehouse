@@ -5,7 +5,7 @@ COMPOSE := docker compose  # finds infrastructure/docker-compose.yml via COMPOSE
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps portal logs config psql s3 lifecycle trino airflow dbt dct charts-check test
+.PHONY: help env up down reset ps portal course logs config psql s3 lifecycle trino airflow dbt dct charts-check test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-13s %s\n", $$1, $$2}'
@@ -17,8 +17,8 @@ env:  ## Create .env from .env.example with random secrets (refuses to overwrite
 	  echo "$${line/__SECRET__/$$(openssl rand -hex 16)}"; done > .env
 	@echo "wrote .env"
 
-up:  ## Start the stack; waits until services are healthy and one-shot jobs exited 0
-	$(COMPOSE) up -d --wait --remove-orphans
+up:  ## Build (cached) and start the stack; waits until services are healthy and one-shot jobs exited 0
+	$(COMPOSE) up -d --build --wait --remove-orphans
 	@$(COMPOSE) ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
 
 down:  ## Stop and remove containers (volumes, i.e. data, are kept)
@@ -32,6 +32,9 @@ ps:  ## Show all containers, including the finished one-shot jobs
 
 portal:  ## Open the start page: every web UI in one place, with a reachability check
 	@open infrastructure/portal.html 2>/dev/null || xdg-open infrastructure/portal.html
+
+course:  ## Open the hands-on course: 16 lessons on this pipeline and data engineering
+	@open course/index.html 2>/dev/null || xdg-open course/index.html
 
 logs:  ## Follow logs: make logs [S=service]
 	$(COMPOSE) logs -f $(S)
@@ -61,7 +64,7 @@ airflow:  ## Airflow CLI in the airflow container: make airflow ARGS="dags list"
 	$(COMPOSE) exec airflow airflow $(or $(ARGS),dags list)
 
 dbt:  ## dbt in the airflow container (project dbt/ at /opt/dbt): make dbt ARGS="build -s +stg_logs"
-	$(COMPOSE) exec airflow bash -c 'cd /opt/dbt && /opt/dbt-venv/bin/dbt $(or $(ARGS),debug)'
+	$(COMPOSE) exec -w /opt/dbt airflow /opt/dbt-venv/bin/dbt $(or $(ARGS),debug)
 
 dct:  ## dbt Charts CLI in the charts container: make dct ARGS="render charts/fleet_overview.yml --format text"
 	$(COMPOSE) exec -w /opt/dbt charts /opt/charts-venv/bin/dct $(or $(ARGS),--help)

@@ -1,0 +1,2071 @@
+<!doctype html>
+<!-- Hands-on course on this pipeline and the data engineering behind it. One static file: no
+     dependencies, works offline and straight from disk (`make course`). Progress lives in this
+     browser's localStorage. Lessons are <article class="lesson"> blocks; the sidebar is built from them. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PX4 Lakehouse Course</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --text: #15171c; --muted: #5d6371; --border: #e1e4ea;
+    --accent: #2563d9; --accent-soft: #e8effc; --code: #eef1f5; --pre: #f3f5f8;
+    --ok: #16884a; --ok-soft: #e3f4ea; --bad: #b9480f; --bad-soft: #fbece3; --wait: #8a909c; --wait-soft: #eef0f3;
+    --lab: #9a6700; --lab-soft: #fff6dd; --lab-border: #f0d78c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1014; --surface: #171a20; --text: #e6e8ec; --muted: #9ba1ad; --border: #282c35;
+      --accent: #7ea6ff; --accent-soft: #1d2638; --code: #20242c; --pre: #12151a;
+      --ok: #45c97f; --ok-soft: #15291e; --bad: #ff9566; --bad-soft: #33201a; --wait: #6b717d; --wait-soft: #22252c;
+      --lab: #f0c35a; --lab-soft: #2a2416; --lab-border: #5c4a1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 72px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font: 0.86em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { margin: 0; overflow-x: auto; }
+  pre code { display: block; background: none; padding: 0; overflow-wrap: normal; white-space: pre; }
+
+  /* --- top bar -------------------------------------------------------------------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  .topbar h1 { font-size: 16px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .spacer { flex: 1; }
+  .menu-btn { display: none; }
+  .stack { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; color: var(--wait); background: var(--wait-soft); white-space: nowrap; }
+  .stack::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+  .stack.up { color: var(--ok); background: var(--ok-soft); }
+  .stack.down { color: var(--bad); background: var(--bad-soft); }
+  button {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 11px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+
+  /* --- layout --------------------------------------------------------------------- */
+  .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); max-width: 1180px; margin: 0 auto; }
+  nav.sidebar {
+    position: sticky; top: 53px; align-self: start; height: calc(100vh - 53px); overflow-y: auto;
+    padding: 20px 16px 32px; border-right: 1px solid var(--border);
+  }
+  .progress { margin-bottom: 18px; }
+  .progress-label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .bar { height: 6px; background: var(--border); border-radius: 999px; overflow: hidden; }
+  .bar span { display: block; height: 100%; width: 0; background: var(--ok); transition: width .3s; }
+  .part { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 6px; }
+  nav.sidebar ul { list-style: none; margin: 0; padding: 0; }
+  nav.sidebar li a {
+    display: flex; gap: 8px; align-items: baseline; padding: 5px 8px; border-radius: 6px;
+    color: var(--text); font-size: 14px; line-height: 1.35;
+  }
+  nav.sidebar li a:hover { background: var(--accent-soft); text-decoration: none; }
+  nav.sidebar li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  nav.sidebar .num { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 1.6em; }
+  nav.sidebar .done { margin-left: auto; color: var(--ok); font-weight: 700; }
+  main { padding: 28px 20px 64px; min-width: 0; }
+  .lesson { display: none; max-width: 780px; margin: 0 auto; }
+  .lesson.shown { display: block; }
+
+  /* --- lesson content ------------------------------------------------------------- */
+  .kicker { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .lesson h2 { font-size: 30px; line-height: 1.2; margin: 4px 0 8px; letter-spacing: -0.01em; }
+  .lesson h3 { font-size: 20px; margin: 34px 0 10px; padding-top: 6px; border-top: 1px solid var(--border); }
+  .lesson h4 { font-size: 16px; margin: 20px 0 6px; }
+  .lead { font-size: 18px; color: var(--muted); margin: 0 0 18px; }
+  .goals { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; }
+  .goals b { display: block; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .goals ul { margin: 6px 0 0; padding-left: 20px; }
+  pre.diagram { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .files { list-style: none; padding: 0; margin: 8px 0; }
+  .files li { padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 15px; }
+  .files li:last-child { border-bottom: 0; }
+  .note { background: var(--accent-soft); border-radius: 10px; padding: 10px 16px; margin: 14px 0; font-size: 15px; }
+
+  .cmd { margin: 12px 0 16px; }
+  .cmd .box { position: relative; background: var(--pre); border: 1px solid var(--border); border-radius: 10px; }
+  .cmd pre { padding: 12px 70px 12px 14px; font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .cmd .copy { position: absolute; top: 7px; right: 7px; font-size: 12px; padding: 2px 9px; }
+  .expected { margin: 6px 2px 0; font-size: 14px; color: var(--muted); }
+  .expected::before { content: "Expected: "; font-weight: 600; color: var(--text); }
+  .expected pre, pre.out { margin-top: 6px; background: var(--surface); border: 1px dashed var(--border); border-radius: 8px; padding: 8px 12px; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); }
+
+  .exercise { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin: 14px 0; }
+  .exercise > p:first-child { margin-top: 0; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 14px; }
+  details[open] summary { margin-bottom: 6px; }
+
+  .lab { background: var(--lab-soft); border: 1px solid var(--lab-border); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+  .lab h4 { margin: 0 0 6px; color: var(--lab); }
+  .lab h4::before { content: "Lab · "; }
+  .lab ol { padding-left: 22px; margin: 6px 0; }
+  .lab li { margin: 6px 0; }
+  .lab li.undo::marker { color: var(--lab); font-weight: 700; }
+  .lab li.undo > b:first-child { color: var(--lab); }
+
+  .quiz .q { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin: 12px 0; }
+  .quiz .q > p:first-child { margin: 0 0 8px; font-weight: 600; }
+  .quiz .opt { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 8px 12px; line-height: 1.4; }
+  .quiz .opt.right { border-color: var(--ok); background: var(--ok-soft); }
+  .quiz .opt.wrong { border-color: var(--bad); background: var(--bad-soft); }
+  .quiz .why { display: none; margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  .quiz .q.answered .why { display: block; }
+
+  .complete { display: flex; align-items: center; gap: 10px; margin: 36px 0 12px; padding: 14px 16px; background: var(--ok-soft); border-radius: 10px; font-weight: 600; cursor: pointer; }
+  .complete input { width: 18px; height: 18px; accent-color: var(--ok); }
+  .pager { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; }
+  .pager a { display: block; max-width: 48%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 14px; }
+  .pager a small { display: block; color: var(--muted); font-size: 12px; }
+  .pager .next { margin-left: auto; text-align: right; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin: 12px 0; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  dl.glossary dt { font-weight: 700; margin-top: 14px; }
+  dl.glossary dd { margin: 2px 0 0; color: var(--muted); }
+
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .menu-btn { display: inline-block; }
+    nav.sidebar {
+      display: none; position: fixed; top: 53px; left: 0; right: 0; bottom: 0; height: auto; z-index: 9;
+      background: var(--bg); border-right: 0;
+    }
+    body.menu-open nav.sidebar { display: block; }
+    main { padding: 20px 16px 48px; }
+    .lesson h2 { font-size: 25px; }
+    .stack { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <button class="menu-btn" id="menu" type="button" aria-expanded="false">Lessons</button>
+  <h1>Learn the PX4 lakehouse</h1>
+  <span class="spacer"></span>
+  <span class="stack" id="stack" title="Reachability ping of the 5 web UIs (make ps is authoritative)">Stack: checking</span>
+  <a href="../infrastructure/portal.html">Portal</a>
+</header>
+
+<div class="layout">
+<nav class="sidebar" id="sidebar" aria-label="Lessons">
+  <div class="progress">
+    <div class="progress-label" id="progress-label">0 of 16 lessons done</div>
+    <div class="bar"><span id="progress-bar"></span></div>
+  </div>
+  <div id="toc"></div>
+</nav>
+
+<main id="main">
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l00" data-part="Part I · Foundations" data-title="Start here" data-minutes="10">
+  <div class="kicker">Lesson 0 · 10 min</div>
+  <h2>Start here</h2>
+  <p class="lead">How this course works, what you need running, and the few rules that keep your data safe while you experiment.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Know how a lesson is organized and how to track your progress.</li>
+    <li>Have the stack running and the portal open.</li>
+    <li>Know how to undo anything a lab changes.</li>
+  </ul></div>
+
+  <h3>What this course is</h3>
+  <p>This project is a small but complete <b>data platform</b>. It downloads public drone flight logs from PX4 Flight Review, lands the raw files in object storage, turns them into tables, cleans and models them with SQL, tests them, and publishes dashboards. All of it runs on your laptop.</p>
+  <p>Each lesson takes one piece of it and teaches two things at once:</p>
+  <ul>
+    <li><b>The data engineering idea</b>, explained from scratch: why landing zones exist, what a table format is, why ingestion must be idempotent, what "grain" means…</li>
+    <li><b>How this pipeline does it</b>: the files, the UI, the data, and the commands that show it working.</li>
+  </ul>
+  <p>You already know SQL and Python, so the course doesn't explain those. It does explain every DE concept the first time it appears; the <a href="#glossary">glossary</a> collects them all.</p>
+
+  <h3>How a lesson works</h3>
+  <ul>
+    <li><b>Concepts</b>: the idea, with a small diagram when it helps.</li>
+    <li><b>In this repo</b>: the files that implement it. The links open the source.</li>
+    <li><b>Tour</b>: where to look in the web UIs.</li>
+    <li><b>Run it</b>: commands with a <i>Copy</i> button. Run them from the <b>repo root</b> in a terminal. The <i>Expected</i> note shows output from a real run on 2026-10-15; your numbers will differ because the data grows every day.</li>
+    <li><b>Exercises</b>: a question you answer by exploring. Click <i>Show answer</i> to check.</li>
+    <li><b>Labs</b> (amber boxes): break something on purpose, watch the pipeline catch it, then undo it.</li>
+    <li><b>Quiz</b>: a few questions; click an option to see if it's right and why.</li>
+    <li><b>Mark lesson complete</b> at the bottom updates the progress bar (saved in this browser).</li>
+  </ul>
+  <p>Lessons build on each other, so go in order. The whole course is about 10 hours.</p>
+
+  <h3>Before you start</h3>
+  <p>The stack must be running. From the repo root:</p>
+  <div class="cmd"><div class="box"><pre><code>make up</code></pre></div>
+    <p class="expected">a table of 8 containers: 6 <code>running … (healthy)</code>, plus <code>setup</code> and <code>lakekeeper-migrate</code> as <code>Exited (0)</code>.</p></div>
+  <p>The badge at the top right of this page pings the five web UIs. It should read <b>Stack: 5/5 up</b>. Then open the portal, which links every UI:</p>
+  <div class="cmd"><div class="box"><pre><code>make portal</code></pre></div></div>
+  <p>Optional: <a href="https://docs.astral.sh/uv/">uv</a> on your machine, for the unit tests and the ULog tools in lessons 3 and 8.</p>
+
+  <h3>Safety rules</h3>
+  <div class="note">Everything in this course is reversible as long as you follow these rules.</div>
+  <ol>
+    <li><b>Never run <code>make reset</code>.</b> It deletes every volume: all data, the Airflow history and the catalog. Nothing in the course needs it.</li>
+    <li><b>Keep downloads small.</b> A full day of flight logs is ~9 GB. When you trigger ingestion, always pass <code>{"max_ulogs": 2}</code> to <code>{"max_ulogs": 5}</code>. Never unpause <code>px4_ingest_daily</code> unless <code>PX4_MAX_ULOGS_PER_RUN</code> is set in <code>.env</code>.</li>
+    <li><b>Experiment in the <code>sandbox</code> schema</b>, created in lesson 5. Don't create tables in <code>bronze</code>, <code>silver</code>, <code>gold</code> or <code>audit</code>.</li>
+    <li><b>Finish every lab with its Undo step</b>, then check that <code>git status</code> shows no changes you didn't intend.</li>
+    <li><b>Leave the DAG states as you found them:</b> only <code>px4_transform</code> is unpaused (active).</li>
+  </ol>
+
+  <h3>How to undo things</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>You changed</th><th>Undo with</th></tr></thead>
+    <tbody>
+      <tr><td>A file in the repo</td><td><code>git checkout -- &lt;file&gt;</code>; <code>git status</code> to confirm it's clean</td></tr>
+      <tr><td>A new file you created</td><td><code>rm &lt;file&gt;</code></td></tr>
+      <tr><td>A table you dropped</td><td>Lakekeeper UI → namespace → <b>Deleted</b> → Restore (for 7 days; lesson 6)</td></tr>
+      <tr><td>An Airflow Variable</td><td><code>make airflow ARGS="variables delete &lt;name&gt;"</code></td></tr>
+      <tr><td>A DAG's paused state</td><td><code>make airflow ARGS="dags pause &lt;dag_id&gt;"</code> (or the toggle in the UI)</td></tr>
+      <tr><td>A stopped container</td><td><code>make up</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="c">
+      <p>You want to try a <code>CREATE TABLE</code> experiment. Where should the table go?</p>
+      <button class="opt" data-opt="a">In <code>bronze</code>, next to the raw data</button>
+      <button class="opt" data-opt="b">In <code>gold</code>, so the dashboards can see it</button>
+      <button class="opt" data-opt="c">In <code>sandbox</code></button>
+      <p class="why">The four layer schemas belong to the pipeline: dbt and the ingestion code own them, and the maintenance DAG walks them. <code>sandbox</code> is yours.</p>
+    </div>
+    <div class="q" data-answer="b">
+      <p>A lab asked you to edit <code>dbt/models/silver/stg_logs.sql</code>. How do you put it back?</p>
+      <button class="opt" data-opt="a"><code>make reset</code></button>
+      <button class="opt" data-opt="b"><code>git checkout -- dbt/models/silver/stg_logs.sql</code></button>
+      <button class="opt" data-opt="c">Delete the file</button>
+      <p class="why">Git restores the committed version of that one file. <code>make reset</code> would delete all your data and leave the edit in place.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l01" data-part="Part I · Foundations" data-title="The big picture" data-minutes="45">
+  <div class="kicker">Lesson 1 · 45 min</div>
+  <h2>The big picture</h2>
+  <p class="lead">What problem this pipeline solves, how data flows through it, and the vocabulary every later lesson uses. You'll finish by following one real flight from the API all the way to a dashboard.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain the difference between a data lake, a warehouse and a lakehouse.</li>
+    <li>Name the four data layers (landing, bronze, silver, gold) and what each one is for.</li>
+    <li>Trace a single flight log through every layer with SQL and S3 commands.</li>
+  </ul></div>
+
+  <h3>The problem</h3>
+  <p>PX4 is the most widely used open-source drone autopilot. Pilots upload their flight logs to a public site, <a href="https://review.px4.io/browse">PX4 Flight Review</a>. That data could answer real questions: which vehicle types fly most, in which flight modes, on which firmware, and how often they crash. But it's scattered across ~477,000 index records and one binary file per flight.</p>
+  <p>Answering those questions <i>once</i> is a script. Answering them <b>every day, reliably, as new data arrives</b> is data engineering. That means downloading politely, never losing or duplicating data, cleaning known defects, testing the results, and publishing only numbers you trust.</p>
+
+  <h3>Concepts</h3>
+  <h4>Lake, warehouse, lakehouse</h4>
+  <ul>
+    <li>A <b>data warehouse</b> (e.g. Snowflake, BigQuery) stores tables in its own format and runs SQL on them. You get schemas, transactions and fast SQL, but the data lives inside that one product.</li>
+    <li>A <b>data lake</b> is files (CSV, JSON, Parquet) in cheap object storage like S3. It's open and cheap, but "a folder of files" has no schema, no transactions and no history.</li>
+    <li>A <b>lakehouse</b> keeps the files in object storage and adds an open <b>table format</b> (Apache Iceberg here) that turns them into real tables. Any engine can query them: Trino, Spark, DuckDB… This project is a small lakehouse.</li>
+  </ul>
+  <h4>ELT, batch</h4>
+  <p><b>ETL</b> transforms data before loading it. <b>ELT</b> loads it raw first and transforms it afterwards with SQL, inside the platform. ELT keeps the raw data, so when a cleaning rule turns out to be wrong, you fix the SQL and rebuild; nothing has to be downloaded again. This pipeline is ELT.</p>
+  <p>It's also <b>batch</b>: once a day it processes the previous day's uploads. (The alternative, <i>streaming</i>, processes each event as it arrives; nothing here needs that.)</p>
+  <h4>The medallion layers</h4>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Layer</th><th>What it holds</th><th>Rule</th><th>Here</th></tr></thead>
+    <tbody>
+      <tr><td>landing</td><td>Source files exactly as downloaded</td><td>Never modified</td><td><code>s3://landing/px4/…</code> (<code>.json.gz</code>, <code>.ulg</code>)</td></tr>
+      <tr><td>bronze</td><td>Raw records as tables, plus audit columns</td><td>Append-only: rows are added, never changed</td><td><code>bronze.*</code>, written by <code>drone_ingest</code></td></tr>
+      <tr><td>silver</td><td>Cleaned, typed, deduplicated, modeled data</td><td>Rebuildable from bronze at any time</td><td><code>silver.*</code>, built by dbt</td></tr>
+      <tr><td>gold</td><td>Aggregates for one purpose (a dashboard)</td><td>Fixed columns and types (a contract)</td><td><code>gold.mart_*</code>, built by dbt</td></tr>
+    </tbody>
+  </table></div>
+  <p>Each layer only reads from the one before it. If silver is wrong, you rebuild it from bronze; if bronze is wrong, you reload it from landing. That's the safety net.</p>
+
+  <h4>The whole pipeline</h4>
+<pre class="diagram"> PX4 Flight Review API ── index (.json.gz, daily) + one .ulg per flight
+        │  Airflow: px4_ingest_daily (02:00) runs drone_ingest
+        ▼
+ landing (RustFS / S3)  ──▶  bronze (Iceberg tables)
+                                   │  bronze changed → asset event
+                                   ▼
+                     Airflow: px4_transform runs dbt
+                     silver (clean, model) ──▶ gold (marts) ──▶ tests
+                                   │
+                                   ▼
+                     dbt Charts dashboards + HTML/PDF reports in s3://reports
+ Catalog: Lakekeeper (table → files)   ·   SQL engine: Trino   ·   State: PostgreSQL</pre>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../README.md">README.md</a>: the architecture diagram and the list of containers.</li>
+    <li><a href="../CLAUDE.md">CLAUDE.md</a>: the build log, one phase per technology, with every finding.</li>
+    <li><a href="../DECISIONS.md">DECISIONS.md</a>: why things are the way they are (D-001 … D-010).</li>
+    <li><code>ingest/</code> (download and load), <code>dags/</code> (orchestration), <code>dbt/</code> (transformation and dashboards), <code>infrastructure/</code> (everything that runs the platform).</li>
+  </ul>
+
+  <h3>Tour</h3>
+  <ol>
+    <li>Open the <a href="../infrastructure/portal.html">portal</a>. It lists the five web UIs in pipeline order.</li>
+    <li><a href="http://localhost:8080">Airflow</a>: <b>what</b> runs and <b>when</b>. Find the DAGs <code>px4_ingest_daily</code> and <code>px4_transform</code>.</li>
+    <li><a href="http://localhost:9001/rustfs/console/">RustFS console</a>: <b>where the bytes live</b>. The buckets <code>landing</code>, <code>lakehouse</code> and <code>reports</code>.</li>
+    <li><a href="http://localhost:8181/ui/">Lakekeeper</a>: <b>which files form which table</b>. Warehouse <code>px4</code> → namespaces <code>bronze</code>, <code>silver</code>, <code>gold</code>, <code>audit</code>.</li>
+    <li><a href="http://localhost:8085/ui/">Trino</a>: <b>the SQL engine</b>. Every query that dbt and the dashboards run shows up here.</li>
+    <li><a href="http://localhost:8088/fleet_overview/">Dashboards</a>: <b>the product</b>. Gold tables as charts.</li>
+  </ol>
+
+  <h3>Exercise: trace one flight</h3>
+  <p>Follow one real flight log through every layer. Run each step, then compare with the answer.</p>
+  <div class="exercise">
+    <p><b>1. Pick a flight.</b> Take the most recently parsed log:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT log_id, log_date FROM audit.ulog_downloads WHERE status = 'parsed' ORDER BY event_at DESC LIMIT 1"</code></pre></div>
+      <p class="expected">one row, e.g. <code>"0562512f-8c77-4269-8b39-797ae9cf0935","2026-10-14"</code>. Use <b>your</b> <code>log_id</code> and <code>log_date</code> below.</p></div>
+    <p><b>2. Landing.</b> The raw flight file, as downloaded:</p>
+    <div class="cmd"><div class="box"><pre><code>make s3 ARGS="ls s3://landing/px4/ulog/log_date=2026-10-14/" | grep 0562512f</code></pre></div>
+      <p class="expected"><code>2026-10-15 06:03:54   11833376 0562512f-….ulg</code> (a 12 MB binary file).</p></div>
+    <p><b>3. Bronze.</b> The index record (raw JSON) and the telemetry rows parsed from the file:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT log_date, _change_type, substr(payload, 1, 100) FROM bronze.logs_index_raw WHERE log_id = '0562512f-8c77-4269-8b39-797ae9cf0935'"
+make trino SQL="SELECT count(*) FROM bronze.telemetry_raw WHERE log_id = '0562512f-8c77-4269-8b39-797ae9cf0935'"</code></pre></div>
+      <p class="expected">one <code>insert</code> row whose payload starts <code>{"airframe_name":"Generic Quadcopter",…</code>, then <code>"317"</code> telemetry rows (one per second of flight).</p></div>
+    <p><b>4. Silver.</b> The cleaned, modeled row for this flight:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT uploaded_date, vehicle_class, duration_s, is_simulation, has_telemetry FROM silver.fct_flight WHERE log_id = '0562512f-8c77-4269-8b39-797ae9cf0935'"</code></pre></div>
+      <p class="expected"><code>"2026-10-14","multirotor","316","false","true"</code>.</p></div>
+    <p><b>5. Gold.</b> This flight is now one of the logs counted in its class and month:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT month, vehicle_class, logs, round(flight_hours, 1) FROM gold.mart_flights_by_class_month WHERE month = date '2026-10-01' AND vehicle_class = 'multirotor'"</code></pre></div>
+      <p class="expected"><code>"2026-10-01","multirotor","4434","205.4"</code>.</p></div>
+    <p><b>6. Dashboard.</b> On <a href="http://localhost:8088/fleet_overview/">Fleet overview</a>, the "Flight Hours per Month, by Vehicle Class" chart shows that same multirotor value for the latest month.</p>
+    <details><summary>What did this show?</summary>
+      <p>One flight became: a file (landing) → a JSON row plus ~300 telemetry rows (bronze) → one clean row with derived columns such as <code>vehicle_class</code> and <code>is_simulation</code> (silver) → one unit inside an aggregate (gold) → a number on a chart. Notice that the names change on the way: <code>log_date</code> in bronze becomes <code>uploaded_date</code> in silver, because it's the upload date, not the flight date (lesson 3).</p>
+      <p>If step 2 printed nothing, the raw file had already expired. Landing keeps raw flight files for one day (lesson 4); bronze keeps the parsed data forever.</p>
+    </details>
+  </div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Which containers <i>store</i> data, and which only <i>process</i> it?</p>
+    <details><summary>Show answer</summary>
+      <p><b>Store:</b> <code>rustfs</code> (every file: raw data, all table data and metadata, reports) and <code>postgres</code> (Lakekeeper's catalog and Airflow's run history). Both keep it in Docker volumes.</p>
+      <p><b>Process only:</b> <code>airflow</code> (runs the code), <code>trino</code> (runs SQL), <code>lakekeeper</code> (answers catalog requests; its state is in Postgres), <code>charts</code> (renders dashboards). Stop any of these, and no data is lost.</p>
+    </details>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="a">
+      <p>Which layer is allowed to change existing rows?</p>
+      <button class="opt" data-opt="a">Silver and gold: dbt rebuilds or merges them</button>
+      <button class="opt" data-opt="b">Bronze: it fixes bad records as they arrive</button>
+      <button class="opt" data-opt="c">Landing: it overwrites old files</button>
+      <p class="why">Landing is immutable and bronze is append-only, which is what makes them a safe source to rebuild everything else from.</p>
+    </div>
+    <div class="q" data-answer="b">
+      <p>Why ELT rather than ETL here?</p>
+      <button class="opt" data-opt="a">It's faster to download</button>
+      <button class="opt" data-opt="b">Raw data is kept, so a wrong cleaning rule is fixed by changing SQL and rebuilding</button>
+      <button class="opt" data-opt="c">ETL can't handle JSON</button>
+      <p class="why">With ETL, a bug in the transform corrupts what you stored. With ELT, the raw data in bronze is untouched.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>What makes this a <i>lakehouse</i> rather than a plain data lake?</p>
+      <button class="opt" data-opt="a">The data is in S3</button>
+      <button class="opt" data-opt="b">It uses Parquet files</button>
+      <button class="opt" data-opt="c">A table format (Iceberg) adds schemas, transactions and history on top of the files</button>
+      <p class="why">A lake also has S3 and Parquet. The table format is what turns files into tables.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l02" data-part="Part I · Foundations" data-title="Containers and Compose" data-minutes="40">
+  <div class="kicker">Lesson 2 · 40 min</div>
+  <h2>Containers and Compose</h2>
+  <p class="lead">The platform is 8 containers described in one file. This lesson covers how they find each other, where data survives restarts, and how Compose starts everything in the right order.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Tell an image from a container, and a container from a volume.</li>
+    <li>Explain how containers reach each other by name.</li>
+    <li>Read the start order from <code>depends_on</code>, and see what happens when a service disappears.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>Image:</b> a read-only template (an OS, Python, the installed code). <b>Container:</b> a running instance of an image. You can delete and recreate containers freely.</li>
+    <li><b>Volume:</b> storage that outlives containers. Postgres and RustFS keep their data in named volumes, so <code>make down</code> loses nothing; only <code>make reset</code> (<code>down -v</code>) deletes volumes.</li>
+    <li><b>Compose</b> describes a set of containers (<b>services</b>) in one YAML file and puts them on a private <b>network</b>. On that network each service is reachable <b>by its name</b>: Airflow talks to <code>http://trino:8080</code>, not to an IP.</li>
+    <li><b>Ports:</b> <code>127.0.0.1:8085:8080</code> publishes the container's port 8080 as port 8085 on <i>your</i> machine, only on localhost. Containers use the internal port; your browser uses the published one.</li>
+    <li><b>Healthchecks</b> are commands Docker runs periodically to decide whether a container is <i>healthy</i>, not merely running (e.g. "does Postgres answer a query?").</li>
+    <li><b><code>depends_on</code></b> orders startup. <code>condition: service_healthy</code> waits until a container is healthy. <code>condition: service_completed_successfully</code> waits until a <b>one-shot job</b> has finished with exit code 0.</li>
+    <li><b>Secrets</b> live only in <code>.env</code> (never committed). Compose substitutes <code>${VAR}</code> from it.</li>
+  </ul>
+<pre class="diagram">postgres ──healthy──▶ lakekeeper-migrate ──exit 0──▶ lakekeeper ──healthy──┐
+rustfs ──healthy─────────────────────────────────────────────────────────┴─▶ setup ──exit 0──▶ trino ──healthy──▶ airflow, charts</pre>
+  <p><code>setup</code> is a one-shot job: it creates the buckets, lifecycle rules, warehouse and namespaces through each tool's API, prints what it did, and exits. It's <b>idempotent</b>: running it again changes nothing that's already right.</p>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../infrastructure/docker-compose.yml">infrastructure/docker-compose.yml</a>: all 8 containers, with comments.</li>
+    <li><a href="../infrastructure/setup/setup.py">infrastructure/setup/setup.py</a>: the one-shot configuration.</li>
+    <li><a href="../infrastructure/airflow/Dockerfile">infrastructure/airflow/Dockerfile</a>: the image for <code>airflow</code>, <code>setup</code> and <code>charts</code>. Note the comment about layer order.</li>
+    <li><a href="../Makefile">Makefile</a> and <a href="../.env.example">.env.example</a>: the shortcuts and the configuration template.</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make ps</code></pre></div>
+    <p class="expected">8 rows; <code>setup</code> and <code>lakekeeper-migrate</code> are <code>exited … Exited (0)</code>, which is correct for one-shot jobs.</p></div>
+  <div class="cmd"><div class="box"><pre><code>docker compose config --services</code></pre></div>
+    <p class="expected"><code>postgres rustfs lakekeeper-migrate lakekeeper setup trino airflow charts</code> (one per line).</p></div>
+  <p>Service names are DNS names on the internal network. Ask the Postgres container to resolve two of them:</p>
+  <div class="cmd"><div class="box"><pre><code>docker compose exec postgres getent hosts rustfs trino</code></pre></div>
+    <p class="expected">two private IPs, e.g. <code>172.19.0.3 rustfs</code> and <code>172.19.0.5 trino</code>.</p></div>
+  <div class="cmd"><div class="box"><pre><code>docker volume ls | grep px4-lakehouse
+docker stats --no-stream</code></pre></div>
+    <p class="expected">4 volumes (<code>postgres-data</code>, <code>rustfs-data</code>, <code>airflow-logs</code>, <code>airflow-work</code>); memory per container, e.g. airflow ~1.1 GB, trino ~1 GB (limit 3 GB), lakekeeper ~40 MB.</p></div>
+  <p>Re-run the one-shot setup and check that it changes nothing:</p>
+  <div class="cmd"><div class="box"><pre><code>docker compose run --rm --no-deps setup</code></pre></div>
+    <p class="expected">lines like <code>setup: warehouse exists: px4 (soft delete, 7 d)</code>, then <code>setup: done</code>.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Why does <code>trino</code> wait for <code>setup</code> to finish before it starts?</p>
+    <details><summary>Show answer</summary>
+      <p>Trino's Iceberg catalog points at Lakekeeper's warehouse <code>px4</code> (see <code>infrastructure/trino/catalog/iceberg.properties</code>). <code>setup</code> creates that warehouse and the namespaces. If Trino started first, on a fresh install its first queries would fail with "warehouse not found".</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> You run <code>make down</code>, then <code>make up</code>. Is your data still there? What about after <code>make reset</code>?</p>
+    <details><summary>Show answer</summary>
+      <p>After <code>down</code>/<code>up</code>, yes: the containers are recreated, but the volumes holding the data are kept. <code>make reset</code> runs <code>down -v</code>, which deletes the volumes and so every table, file and run history.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>A service disappears</h4>
+    <ol>
+      <li>Stop the SQL engine: <code>docker compose stop trino</code></li>
+      <li>Try a query: <code>make trino SQL="select 1"</code>. It fails: the container isn't running.</li>
+      <li>Ask dbt Charts to render a board from scratch: <code>make dct ARGS="render charts/pipeline_health.yml --format text"</code>. Look for <code>Failed to resolve 'trino'</code>: a stopped container's <b>name disappears from the network</b>.</li>
+      <li>Open <a href="http://localhost:8088/fleet_overview/">Fleet overview</a>. It still shows numbers, with "Data as of …" at the bottom: the dashboard server keeps its last results. Your portal page shows Trino as "no response".</li>
+      <li class="undo"><b>Undo:</b> <code>docker compose start trino</code>, then <code>make ps</code> until trino is <code>(healthy)</code> (about 10 s), and <code>make trino SQL="select 1"</code> prints <code>"1"</code>.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>Inside the Docker network, how does Airflow reach Trino?</p>
+      <button class="opt" data-opt="a"><code>http://localhost:8085</code></button>
+      <button class="opt" data-opt="b"><code>http://trino:8080</code></button>
+      <button class="opt" data-opt="c">Through the portal page</button>
+      <p class="why">Service names resolve on the Compose network, and containers use the internal port. <code>localhost:8085</code> is the published port for <i>your</i> machine; inside a container, localhost is the container itself.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>Why does <code>setup</code> show <code>Exited (0)</code> in <code>make ps</code>?</p>
+      <button class="opt" data-opt="a">It crashed</button>
+      <button class="opt" data-opt="b">It's waiting for Postgres</button>
+      <button class="opt" data-opt="c">It's a one-shot job that finished successfully</button>
+      <p class="why">Exit code 0 means success. Services that depend on it with <code>service_completed_successfully</code> only start after that.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>What does a healthcheck add over "the container is running"?</p>
+      <button class="opt" data-opt="a">Proof the service actually works, e.g. answers a query</button>
+      <button class="opt" data-opt="b">Automatic backups</button>
+      <button class="opt" data-opt="c">Less memory use</button>
+      <p class="why">A process can be running while still initializing or broken. <code>depends_on: service_healthy</code> waits for the real thing.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l03" data-part="Part II · Storage" data-title="The source and ingestion design" data-minutes="50">
+  <div class="kicker">Lesson 3 · 50 min</div>
+  <h2>The source and ingestion design</h2>
+  <p class="lead">Before writing any code, a data engineer studies the source: how it's served, how it changes, and what's wrong with it. Those answers decide how ingestion must work.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Use HTTP conditional requests (ETag, 304) and explain why they matter.</li>
+    <li>Explain idempotency and change detection by hashing.</li>
+    <li>Measure real data defects in bronze with SQL.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <h4>The source</h4>
+  <ul>
+    <li><b>The index</b>: <code>GET https://review.px4.io/dbinfo</code> redirects to <b>one gzipped JSON file</b> (~32 MB) holding <b>every</b> public log since 2016: ~477,000 records with 26 fields each. There are no filters and no pagination; the file is regenerated once a day, just after midnight UTC.</li>
+    <li><b>Flight files</b>: each record has a <code>download_url</code> to a binary <b>ULog</b> file (median 6.5 MB, mean 18 MB). Telemetry such as position, altitude and battery exists only inside these files.</li>
+  </ul>
+  <h4>Don't download what you already have: conditional GET</h4>
+  <p>The server sends an <b>ETag</b> (a fingerprint of the file). The client stores it and sends it back as <code>If-None-Match</code>. If the file hasn't changed, the server answers <b>304 Not Modified</b> with an empty body, so 32 MB becomes 0 bytes.</p>
+  <h4>Idempotency</h4>
+  <p>An operation is <b>idempotent</b> if running it twice has the same effect as running it once. Pipelines fail and get retried all the time, so every step must be safe to re-run:</p>
+  <ul>
+    <li>Re-downloading the same index: 304, nothing changes.</li>
+    <li>Re-loading the same snapshot: 0 new rows.</li>
+    <li>Re-fetching a ULog that's already in landing: skipped.</li>
+  </ul>
+  <h4>Change detection with a hash</h4>
+  <p>Each day's file is yesterday's plus ~500–600 new logs, and occasionally an <i>edited</i> one (a rating added later). Reloading 477k rows daily would be wasteful. Instead, the loader computes <code>payload_hash = sha256(canonical JSON)</code> for each record and compares it with the latest hash stored in bronze for that <code>log_id</code>:</p>
+<pre class="diagram">new log_id               → insert, _change_type = 'insert'
+same log_id, new hash    → insert, _change_type = 'update'   (history is kept)
+same log_id, same hash   → skip</pre>
+  <p>Bronze is <b>append-only</b>: an edited record adds a new row and never overwrites the old one. Silver later keeps only the latest version (lesson 10). The first load (the <b>bootstrap</b>) only takes records uploaded on or after <code>INDEX_START_DATE</code> (2025-01-01).</p>
+  <h4>Profiling: know the defects</h4>
+  <p>Profiling the source (Phase 1, <code>explore/</code>) found real defects that silver must clean:</p>
+  <ul>
+    <li><code>wind_speed = -1</code> means "no data" (~99 %).</li>
+    <li><code>airframe_type</code> is sometimes an integer instead of a name.</li>
+    <li><code>duration_s</code> has overflowed counters (values up to 1.8e13 seconds).</li>
+    <li>~8 % of logs come from simulators (<code>sys_hw</code> contains <code>SITL</code>).</li>
+    <li><code>log_date</code> is the <b>upload</b> date, not the flight date.</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../ingest/src/drone_ingest/index.py">ingest/src/drone_ingest/index.py</a>: <code>snapshot_index</code> (the conditional GET) and <code>load_index</code> (the hash diff).</li>
+    <li><a href="../explore/reports/dbinfo_profile.md">explore/reports/dbinfo_profile.md</a>: the full profile of every field.</li>
+    <li><a href="../explore/reports/ulog_sizes.md">explore/reports/ulog_sizes.md</a>: ULog sizes, which drove the 1-day raw window.</li>
+    <li><a href="../CLAUDE.md">CLAUDE.md</a>, sections 3 and 4: the API contract, the defects and the daily diff.</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <p>The index endpoint redirects to a CDN, which sends an ETag (headers only, no download):</p>
+  <div class="cmd"><div class="box"><pre><code>curl -sI https://review.px4.io/dbinfo | grep -iE "^HTTP|^location"
+curl -sI https://cdn.logs.px4.io/dbinfo.json | grep -iE "^HTTP|^etag|^content-length|^last-modified"</code></pre></div>
+    <p class="expected"><code>HTTP/1.1 302</code> with <code>Location: https://cdn.logs.px4.io/dbinfo.json</code>; then <code>HTTP/2 200</code>, <code>content-length: 32658566</code>, <code>last-modified: … 00:00:36 GMT</code>, <code>etag: "d555…-4"</code>.</p></div>
+  <p>Send the ETag back. The server answers 304 with no body:</p>
+  <div class="cmd"><div class="box"><pre><code>ETAG=$(curl -sI https://cdn.logs.px4.io/dbinfo.json | grep -i '^etag' | cut -d' ' -f2 | tr -d '\r')
+curl -s -o /dev/null -w "HTTP %{http_code}, %{size_download} bytes\n" -H "If-None-Match: $ETAG" https://cdn.logs.px4.io/dbinfo.json</code></pre></div>
+    <p class="expected"><code>HTTP 304, 0 bytes</code>.</p></div>
+  <p>Look inside a flight file. pyulog is installed with <code>drone_ingest</code> (needs uv):</p>
+  <div class="cmd"><div class="box"><pre><code>cd ingest && uv run ulog_info tests/fixtures/ulog/2cfe9a4c-fae0-4764-bc10-1688ed4607de.ulg | head -30; cd ..</code></pre></div>
+    <p class="expected"><code>duration: 0:08:04</code>, info messages (hardware, firmware), then a list of <b>topics</b> (<code>actuator_motors</code>, <code>cpuload</code>, …) with their number of data points. Each topic is a time series at its own rate.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Measure the defects in your bronze data. Bronze keeps each record's raw JSON in <code>payload</code>; use <code>json_extract_scalar</code>.</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT count(*) AS records, count_if(json_extract_scalar(payload, '$.wind_speed') = '-1') AS wind_unknown, count_if(try_cast(json_extract_scalar(payload, '$.airframe_type') AS integer) IS NOT NULL) AS airframe_type_int, count_if(json_extract_scalar(payload, '$.sys_hw') LIKE '%SITL%') AS simulated, count_if(try_cast(json_extract_scalar(payload, '$.duration_s') AS bigint) > 86400) AS longer_than_a_day FROM bronze.logs_index_raw"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p>On 2026-10-15: <code>315402</code> records, <code>314893</code> with unknown wind (99.8 %), <code>60046</code> with a numeric airframe type, <code>24637</code> simulated (7.8 %), and <code>25</code> "longer than a day" (overflowed counters). Silver turns each of these into a clean value or a null (lesson 11), and tests prove none survive (lesson 13).</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> The index file holds 477,681 records, but <code>bronze.logs_index_raw</code> has ~315,000 rows. Where did the rest go?</p>
+    <details><summary>Show answer</summary>
+      <p>The bootstrap only loads records with <code>log_date &gt;= INDEX_START_DATE</code> (2025-01-01). The ~162,000 older records were counted as "out of window" and skipped on purpose. Check the change types: <code>make trino SQL="SELECT _change_type, count(*) FROM bronze.logs_index_raw GROUP BY 1"</code>. So far every row is an <code>insert</code>; <code>update</code> rows appear when a record is edited upstream.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>An idempotent download</h4>
+    <ol>
+      <li>Run the ingestion step that downloads the index, inside the airflow container (the same command the DAG runs):<br><code>docker compose exec airflow /opt/ingest-venv/bin/drone-ingest snapshot-index</code></li>
+      <li>Read the log lines: it sends <code>If-None-Match</code> with the ETag of the last <i>loaded</i> snapshot, gets <code>304 Not Modified</code>, and prints the JSON summary <code>{"command": "snapshot-index", …, "status": "not_modified", …}</code>.</li>
+      <li>The pipeline recorded what it did. Read its audit table:<br><code>make trino SQL="SELECT entity, status, bytes, started_at FROM audit.ingestion_runs ORDER BY started_at DESC LIMIT 5"</code><br>Your run is at the top: <code>index_snapshot</code>, <code>not_modified</code>, <code>0</code> bytes.</li>
+      <li class="undo"><b>Undo:</b> nothing to undo. The step was idempotent: no file landed and no table changed except one audit row, which is exactly what should happen.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>The server answers <code>304</code> to a conditional GET. What did the client download?</p>
+      <button class="opt" data-opt="a">The full file again, but faster</button>
+      <button class="opt" data-opt="b">Nothing: the status says its copy is still current</button>
+      <button class="opt" data-opt="c">Only the changed records</button>
+      <p class="why">304 has no body. HTTP has no "only the changes" mode for this file, which is why the loader diffs records by hash.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>A log's rating is edited upstream. What happens in bronze on the next load?</p>
+      <button class="opt" data-opt="a">The existing row is updated in place</button>
+      <button class="opt" data-opt="b">Nothing: the <code>log_id</code> already exists</button>
+      <button class="opt" data-opt="c">A new row is appended with <code>_change_type = 'update'</code></button>
+      <p class="why">The hash changed, so a new version is appended. Bronze keeps history; silver picks the latest version per <code>log_id</code>.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Why does idempotency matter so much in pipelines?</p>
+      <button class="opt" data-opt="a">Steps fail and are retried; a retry must not duplicate or corrupt data</button>
+      <button class="opt" data-opt="b">It makes queries faster</button>
+      <button class="opt" data-opt="c">The API requires it</button>
+      <p class="why">Retries are normal: networks fail, tasks get killed. If re-running a step is always safe, recovery is just "run it again".</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l04" data-part="Part II · Storage" data-title="Object storage and the landing zone" data-minutes="40">
+  <div class="kicker">Lesson 4 · 40 min</div>
+  <h2>Object storage and the landing zone</h2>
+  <p class="lead">Every byte in this platform lives in S3-compatible object storage (RustFS), from raw downloads to tables to reports. This lesson covers how object storage differs from a filesystem, why raw files land untouched, and how old files expire by themselves.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain buckets, keys and prefixes, and why "folders" are an illusion.</li>
+    <li>Read the landing layout and a manifest, and say why the manifest is written last.</li>
+    <li>Watch a lifecycle rule delete an object with no job at all.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>Object storage</b> stores <b>objects</b> (bytes + metadata) under a <b>key</b> inside a <b>bucket</b>. The namespace is flat: <code>px4/ulog/log_date=2026-10-14/x.ulg</code> is one key, and the slashes are just characters. Tools show <b>prefixes</b> as folders for convenience.</li>
+    <li>Objects are written whole and never edited in place: there's no "append" and no cheap "rename". That's why table formats (next lesson) write new files instead of changing old ones.</li>
+    <li>It's cheap, practically unlimited, and accessed over HTTP with the <b>S3 API</b>. RustFS implements the S3 API locally; the same code would work against AWS S3.</li>
+    <li><b>Path-style addressing</b> (<code>http://rustfs:9000/landing/key</code>) instead of virtual-host style (<code>http://landing.rustfs:9000/key</code>), because <code>landing.rustfs</code> doesn't resolve on the Compose network.</li>
+  </ul>
+  <h4>The landing zone</h4>
+  <p>Landing holds source files <b>exactly as downloaded</b>. Keeping that raw copy lets you:</p>
+  <ul>
+    <li>re-parse after fixing a bug, without hitting the API again;</li>
+    <li>audit what the source actually sent;</li>
+    <li>keep "download" and "load" as separate, independently retryable steps.</li>
+  </ul>
+<pre class="diagram">s3://landing/px4/index/snapshot_date=2026-10-15/run_id=…/dbinfo.json.gz   ← the data
+                                                         /_manifest.json  ← written LAST
+s3://landing/px4/ulog/log_date=2026-10-14/&lt;log_id&gt;.ulg</pre>
+  <p><code>key=value</code> segments (<code>snapshot_date=…</code>) are a common convention ("Hive-style"). They make keys self-describing and easy to filter by prefix.</p>
+  <h4>The manifest: a commit marker</h4>
+  <p>A big upload can fail halfway. The downloader writes the data file first, then a small <code>_manifest.json</code> with the ETag, size, record count and <b>sha256</b>. Readers only trust snapshots that have a manifest, and <code>load-index</code> recomputes the sha256 before loading. A half-written file is therefore never loaded.</p>
+  <h4>Lifecycle rules: retention without a job</h4>
+  <p>Raw ULogs are ~9 GB per day, so they can't be kept forever. Instead of a cleanup job, the buckets carry <b>lifecycle rules</b>: "delete objects under this prefix N days after they were written". The storage system applies them by itself, with a background scanner.</p>
+  <ul>
+    <li><code>landing/px4/ulog/</code>: 1 day.</li>
+    <li><code>landing/px4/index/</code>: 7 days.</li>
+    <li><code>reports/</code>: 30 days.</li>
+  </ul>
+  <p>Deletion is asynchronous (it happens some time after an object becomes eligible), so the ingestion code still checks free disk before downloading.</p>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../infrastructure/setup/setup.py">infrastructure/setup/setup.py</a>: <code>LIFECYCLE</code> (the rules) and <code>setup_storage()</code>, which applies them through the S3 API.</li>
+    <li><a href="../ingest/src/drone_ingest/storage.py">ingest/src/drone_ingest/storage.py</a>: the boto3 client (path-style).</li>
+    <li><a href="../ingest/src/drone_ingest/index.py">ingest/src/drone_ingest/index.py</a>: where the gz lands first and the manifest last.</li>
+  </ul>
+
+  <h3>Tour</h3>
+  <ol>
+    <li>Open the <a href="http://localhost:9001/rustfs/console/">RustFS console</a> and log in with <code>S3_ACCESS_KEY</code> / <code>S3_SECRET_KEY</code> from your <code>.env</code>.</li>
+    <li>Browse <code>landing</code> → <code>px4</code> → <code>index</code> → a <code>snapshot_date=…</code> → a <code>run_id=…</code>: the 32 MB <code>dbinfo.json.gz</code> and its 0.3 KB <code>_manifest.json</code>.</li>
+    <li>Browse <code>landing/px4/ulog/</code>: one prefix per upload date, one <code>.ulg</code> per flight.</li>
+    <li>Browse <code>lakehouse</code>: one prefix per namespace (<code>bronze/</code>, <code>silver/</code>…). Lesson 5 explains what's inside.</li>
+  </ol>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make s3 ARGS="ls s3://landing/px4/index/"
+make s3 ARGS="ls s3://landing/px4/ulog/ --recursive --summarize" | tail -2</code></pre></div>
+    <p class="expected">one <code>PRE snapshot_date=…/</code> per day kept (at most 7); then the number and total size of raw ULogs currently in landing, e.g. <code>Total Objects: 10</code>, <code>Total Size: 103203757</code>.</p></div>
+  <p>Print a manifest (<code>-</code> means "to stdout"). Find a real key with <code>make s3 ARGS="ls s3://landing/px4/index/ --recursive"</code> first:</p>
+  <div class="cmd"><div class="box"><pre><code>make s3 ARGS="cp s3://landing/px4/index/snapshot_date=2026-10-15/run_id=manual__2026-10-15T02_16_52.745233_00_00/_manifest.json -"</code></pre></div>
+    <p class="expected"><code>{"etag": "\"d555…-4\"", "last_modified": "Thu, 15 Oct 2026 00:00:36 GMT", "bytes": 32658566, "records": 477681, "sha256": "4814…", "source_url": "https://review.px4.io/dbinfo", …}</code></p></div>
+  <div class="cmd"><div class="box"><pre><code>make lifecycle</code></pre></div>
+    <div class="expected"><pre>BUCKET        RULE                 PREFIX      DAYS  STATUS
+s3://landing  expire-px4-ulog-1d   px4/ulog/   1     Enabled
+s3://landing  expire-px4-index-7d  px4/index/  7     Enabled
+s3://reports  expire-all-30d       *           30    Enabled</pre></div></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Why must the manifest be written <i>after</i> the data file, never before?</p>
+    <details><summary>Show answer</summary>
+      <p>If the manifest came first and the upload then failed, a reader would see a manifest pointing at a missing or truncated file and load garbage. Written last, its presence proves the data file is complete, and its sha256 lets the loader verify that.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> List the raw ULogs with their write times. Roughly when will the oldest ones disappear?</p>
+    <div class="cmd"><div class="box"><pre><code>make s3 ARGS="ls s3://landing/px4/ulog/ --recursive" | sort | head -5</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p>About a day after the time shown, which is when each object was written, not its <code>log_date</code>. In S3 semantics an object becomes eligible <i>N</i> days after creation, rounded up to the next midnight UTC, and the scanner then removes it in the background. The parsed telemetry stays in bronze for good; only the raw copy expires.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>Watch a lifecycle rule work</h4>
+    <ol>
+      <li>Create a scratch bucket and two small objects, one under <code>tmp/</code> and one under <code>keep/</code>:<br>
+        <code>make s3 ARGS="mb s3://scratch-lifecycle"</code><br>
+        <code>echo "temporary" | docker compose run --rm -q -T aws s3 cp - s3://scratch-lifecycle/tmp/a.txt</code><br>
+        <code>echo "keep me" | docker compose run --rm -q -T aws s3 cp - s3://scratch-lifecycle/keep/b.txt</code></li>
+      <li>Add a rule that expires <code>tmp/</code> on a date that has already passed:<br>
+        <code>docker compose run --rm -q aws s3api put-bucket-lifecycle-configuration --bucket scratch-lifecycle --lifecycle-configuration '{"Rules":[{"ID":"expire-tmp","Status":"Enabled","Filter":{"Prefix":"tmp/"},"Expiration":{"Date":"2020-01-01T00:00:00Z"}}]}'</code></li>
+      <li>Wait about 10 seconds, then list: <code>make s3 ARGS="ls s3://scratch-lifecycle --recursive"</code>. Only <code>keep/b.txt</code> is left. RustFS's scanner deleted the expired object (in testing, after ~7 s), and no code of ours ran.</li>
+      <li class="undo"><b>Undo:</b> <code>make s3 ARGS="rb s3://scratch-lifecycle --force"</code> deletes the scratch bucket and its contents.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="c">
+      <p>In object storage, what is <code>px4/ulog/log_date=2026-10-14/</code>?</p>
+      <button class="opt" data-opt="a">A directory you must create first</button>
+      <button class="opt" data-opt="b">A separate bucket</button>
+      <button class="opt" data-opt="c">A prefix shared by some keys; tools display it as a folder</button>
+      <p class="why">The namespace is flat. The "folder" exists only because some keys start with that string.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Why keep raw files in landing at all, if bronze has the parsed data?</p>
+      <button class="opt" data-opt="a">To re-parse after a bug fix without calling the API again, and to audit what the source sent</button>
+      <button class="opt" data-opt="b">Because Trino reads <code>.ulg</code> files directly</button>
+      <button class="opt" data-opt="c">The dashboards read them</button>
+      <p class="why">Landing is the replayable copy of the source. Here it's kept briefly (1 day) because of its size.</p>
+    </div>
+    <div class="q" data-answer="b">
+      <p>What deletes yesterday's raw ULogs?</p>
+      <button class="opt" data-opt="a">A task in <code>px4_ingest_daily</code></button>
+      <button class="opt" data-opt="b">A lifecycle rule that RustFS applies by itself</button>
+      <button class="opt" data-opt="c">Nobody; they're kept forever</button>
+      <p class="why">Before Phase 10 a purge task did this. Now it's a storage-native rule, set once by <code>setup</code>.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l05" data-part="Part II · Storage" data-title="Table formats (Iceberg)" data-minutes="50">
+  <div class="kicker">Lesson 5 · 50 min</div>
+  <h2>Table formats: Apache Iceberg</h2>
+  <p class="lead">A folder of Parquet files isn't a table. This lesson shows what Iceberg adds (schemas, atomic commits, snapshots, time travel, partitioning) by building a small table in your own <code>sandbox</code> and looking at the files it writes.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain the Iceberg file tree: metadata file → manifest list → manifests → data files.</li>
+    <li>Use snapshots, time travel and schema evolution.</li>
+    <li>Read Iceberg's metadata tables (<code>$snapshots</code>, <code>$files</code>, <code>$partitions</code>, <code>$history</code>).</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <h4>Why files alone aren't a table</h4>
+  <p>Picture a table as a folder of Parquet files. A writer adds 3 new files while a reader is listing the folder, so the reader sees half a write. A failed job leaves stray files behind. Deleting rows means rewriting files while others read them. There's no schema to check against, and no way back if a bad load lands. A <b>table format</b> fixes all of this with metadata that says exactly <b>which files make up the table right now</b>.</p>
+<pre class="diagram">catalog ──▶ metadata.json  (schema, partition spec, list of snapshots, current snapshot)
+                 └─▶ manifest list   (one per snapshot: which manifests)
+                        └─▶ manifests (which data files, with per-column min/max stats)
+                               └─▶ data files (Parquet)</pre>
+  <ul>
+    <li><b>Commits are atomic.</b> A writer writes new data files and new metadata, then asks the catalog to swap the table's pointer from the old <code>metadata.json</code> to the new one. Readers see the whole commit or nothing.</li>
+    <li><b>Snapshots.</b> Every commit creates a snapshot: the complete list of files at that moment. Old files aren't deleted, so you can query old snapshots. That's <b>time travel</b>.</li>
+    <li><b>Schema evolution.</b> Adding or renaming a column changes metadata only; old files are read with the new schema (missing columns read as null).</li>
+    <li><b>Hidden partitioning.</b> The table is declared <code>partitioning = ARRAY['month(uploaded_date)']</code>, and Iceberg groups files by month. Queries just filter on <code>uploaded_date</code>, and files from other months are skipped (lesson 7). Users never deal with a "month" column.</li>
+    <li><b>Min/max statistics</b> in the manifests let engines skip files whose values can't match a filter.</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../ingest/src/drone_ingest/catalog.py">ingest/src/drone_ingest/catalog.py</a>: the bronze and audit table definitions (PyIceberg), including partitioning by <code>month(log_date)</code>, and an <code>append</code> that retries when another writer committed first.</li>
+    <li><a href="../infrastructure/trino/catalog/iceberg.properties">infrastructure/trino/catalog/iceberg.properties</a>: how Trino reaches Iceberg (the REST catalog plus S3).</li>
+  </ul>
+
+  <h3>Run it: build a table</h3>
+  <p>Open the interactive SQL shell (<code>make trino</code>), then paste this block. It creates <b>your sandbox</b> and a small table copied from silver, in two separate writes:</p>
+  <div class="cmd"><div class="box"><pre><code>make trino</code></pre></div></div>
+  <div class="cmd"><div class="box"><pre><code>CREATE SCHEMA IF NOT EXISTS sandbox WITH (location = 's3://lakehouse/sandbox');
+CREATE TABLE sandbox.flights (log_id varchar, vehicle_class varchar, uploaded_date date)
+  WITH (partitioning = ARRAY['month(uploaded_date)']);
+INSERT INTO sandbox.flights
+  SELECT log_id, vehicle_class, uploaded_date FROM silver.fct_flight
+  WHERE vehicle_class = 'vtol' AND uploaded_date >= date '2026-09-01';
+INSERT INTO sandbox.flights
+  SELECT log_id, vehicle_class, uploaded_date FROM silver.fct_flight
+  WHERE vehicle_class = 'fixed_wing' AND uploaded_date >= date '2026-09-01';</code></pre></div>
+    <p class="expected"><code>CREATE SCHEMA</code>, <code>CREATE TABLE</code>, <code>INSERT: 1737 rows</code>, <code>INSERT: 1815 rows</code> (your counts will differ).</p></div>
+  <p>Each statement was a commit. List the snapshots:</p>
+  <div class="cmd"><div class="box"><pre><code>SELECT snapshot_id, committed_at, operation,
+       element_at(summary, 'added-records') AS added, element_at(summary, 'total-records') AS total
+FROM sandbox."flights$snapshots" ORDER BY committed_at;</code></pre></div>
+    <div class="expected"><pre> snapshot_id         | operation | added | total
+ 1284407973032019484 | append    | NULL  | 0      ← CREATE TABLE (empty)
+ 3208850691671014386 | append    | 1737  | 1737   ← first INSERT
+ 6657390314480250905 | append    | 1815  | 3552   ← second INSERT</pre></div></div>
+  <p>Where are the files, and how are they partitioned?</p>
+  <div class="cmd"><div class="box"><pre><code>SELECT partition, record_count, file_count FROM sandbox."flights$partitions";
+SELECT file_path, record_count, file_size_in_bytes FROM sandbox."flights$files";</code></pre></div>
+    <p class="expected">two partitions (September and October 2026); four Parquet files whose paths contain <code>data/uploaded_date_month=2026-09/</code> or <code>…=2026-10/</code>, each a few KB to ~25 KB.</p></div>
+
+  <h3>Run it: time travel and schema evolution</h3>
+  <p>Query the table as it was after the <b>first</b> insert. Use <b>your</b> second snapshot id from the list above:</p>
+  <div class="cmd"><div class="box"><pre><code>SELECT count(*) FROM sandbox.flights FOR VERSION AS OF 3208850691671014386;</code></pre></div>
+    <p class="expected"><code>1737</code>: only the VTOL rows existed then.</p></div>
+  <p>Add a column. Only metadata changes; the existing files aren't rewritten:</p>
+  <div class="cmd"><div class="box"><pre><code>ALTER TABLE sandbox.flights ADD COLUMN note varchar;
+INSERT INTO sandbox.flights VALUES ('manual-test', 'other', date '2026-10-15', 'added after the schema change');
+SELECT vehicle_class, count(*) AS n, count(note) AS with_note FROM sandbox.flights GROUP BY 1 ORDER BY 1;</code></pre></div>
+    <p class="expected"><code>fixed_wing 1815 0</code>, <code>other 1 1</code>, <code>vtol 1737 0</code>. Old rows read the new column as null.</p></div>
+  <p>Leave the shell with <code>quit;</code>. Now look at the raw objects behind the table:</p>
+  <div class="cmd"><div class="box"><pre><code>make s3 ARGS="ls s3://lakehouse/sandbox/ --recursive"</code></pre></div>
+    <p class="expected">under <code>flights-&lt;uuid&gt;/</code>: <code>data/…/*.parquet</code> (the rows), and <code>metadata/</code> with numbered <code>0000N-….gz.metadata.json</code> files (one per commit), <code>snap-….avro</code> (manifest lists) and <code>…-m0.avro</code> (manifests).</p></div>
+
+  <h3>Tour</h3>
+  <ol>
+    <li><a href="http://localhost:8181/ui/">Lakekeeper UI</a> → <code>px4</code> → <code>sandbox</code> → <code>flights</code>.</li>
+    <li><b>Schema</b> tab: the four columns, including <code>note</code>.</li>
+    <li><b>Versioning</b> tab: the same snapshots you queried, with their operations and record counts.</li>
+    <li><b>Preview</b> tab: rows read by DuckDB running <i>in your browser</i> (lesson 6 explains how it gets access).</li>
+  </ol>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> How many data files does <code>bronze.telemetry_raw</code> have, and how big are they on average? Why so small?</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL='SELECT count(*) AS files, round(avg(file_size_in_bytes) / 1024) AS avg_kb FROM bronze."telemetry_raw$files"'</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p>On 2026-10-15: <code>8</code> files averaging <code>58</code> KB. Parquet works best with files of hundreds of MB. Each ingestion batch commits its own new files, because objects can't be appended to, so a table that receives many small appends ends up with many small files. That's the <b>small-files problem</b>: every query has to open them all. Lakekeeper flags it too: open the table's <b>Health</b> tab and read "Very small files detected … (target: 128–512 MB). Consider compaction". The weekly maintenance DAG compacts them (lesson 15).</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> The metadata folder had one <code>metadata.json</code> per commit. Which one is the "current" table?</p>
+    <details><summary>Show answer</summary>
+      <p>Whichever one the <b>catalog</b> points to; the files themselves don't say. That pointer, and swapping it atomically, is the catalog's whole job. It's the next lesson.</p>
+    </details>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>What makes an Iceberg commit atomic?</p>
+      <button class="opt" data-opt="a">S3 locks the files while writing</button>
+      <button class="opt" data-opt="b">The catalog swaps the table's pointer to a new metadata file in one step</button>
+      <button class="opt" data-opt="c">Trino writes all files at the same time</button>
+      <p class="why">New files are invisible until the pointer moves. A failed write leaves only unreferenced files, which nothing reads.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Why does time travel work?</p>
+      <button class="opt" data-opt="a">Old snapshots still list their files, and those files weren't deleted</button>
+      <button class="opt" data-opt="b">Iceberg keeps a full copy of the table per day</button>
+      <button class="opt" data-opt="c">Trino caches old results</button>
+      <p class="why">Writes add new files and new metadata. Old snapshots stay readable until they're <i>expired</i>, which maintenance does after 7 days.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>You add a column to a table with 10 GB of data. What happens to the existing Parquet files?</p>
+      <button class="opt" data-opt="a">They're rewritten with the new column</button>
+      <button class="opt" data-opt="b">They're deleted</button>
+      <button class="opt" data-opt="c">Nothing: only the metadata changes, and old rows read the column as null</button>
+      <p class="why">Schema evolution is a metadata operation. Iceberg tracks columns by ID, so even renames are safe.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l06" data-part="Part II · Storage" data-title="The catalog (Lakekeeper)" data-minutes="40">
+  <div class="kicker">Lesson 6 · 40 min</div>
+  <h2>The catalog: Lakekeeper</h2>
+  <p class="lead">The catalog decides which metadata file <i>is</i> the table. This lesson covers how engines talk to it, how a browser can read a table safely, and two safety nets on top: soft delete and protection.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain what a catalog stores, and why every engine must share one.</li>
+    <li>Call the Iceberg REST API and find a table's current metadata file.</li>
+    <li>Drop a table and restore it; protect a table and watch a <code>DROP</code> get refused.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>The catalog</b> maps <code>namespace.table</code> to the location of its current <code>metadata.json</code>. To commit, a writer says "move the pointer from A to B". If someone else committed first (the pointer is no longer A), the catalog refuses and the writer retries. That compare-and-swap is what makes concurrent writes safe.</li>
+    <li><b>One catalog, many engines.</b> Here, Trino (SQL, dbt, dashboards), PyIceberg (the ingestion code) and DuckDB (in the browser) all use the same catalog, so they all see the same tables.</li>
+    <li><b>The Iceberg REST catalog</b> is an open HTTP API for this. Lakekeeper is a server that implements it, and it keeps its own state (warehouses, namespaces, pointers) in <b>PostgreSQL</b>.</li>
+    <li><b>Warehouse → namespace → table.</b> Warehouse <code>px4</code> stores data under <code>s3://lakehouse/</code>. Namespaces (<code>bronze</code>, <code>silver</code>, <code>gold</code>, <code>audit</code>) are like schemas.</li>
+    <li><b>Two APIs:</b> <code>/catalog/v1/…</code> is the standard Iceberg API that engines use; <code>/management/v1/…</code> is Lakekeeper's own API for warehouses, soft delete and protection.</li>
+    <li><b>Vended credentials.</b> The catalog can hand a client short-lived S3 keys scoped to one table's files. That's how DuckDB in your browser reads a table without knowing the real S3 keys.</li>
+    <li><b>Soft delete:</b> a dropped table is hidden but kept for 7 days and can be restored. <b>Protection:</b> a protected table can't be dropped at all until protection is turned off.</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../infrastructure/setup/setup.py">infrastructure/setup/setup.py</a>: <code>setup_lakekeeper()</code> (bootstrap, warehouse, soft-delete profile) and <code>setup_namespaces()</code>.</li>
+    <li><a href="../infrastructure/docker-compose.yml">infrastructure/docker-compose.yml</a>: <code>lakekeeper-migrate</code> and <code>lakekeeper</code>, and the <code>rustfs.localhost</code> alias that browsers use.</li>
+    <li><a href="../DECISIONS.md">DECISIONS.md</a>: D-007 (why Lakekeeper) and D-010 (soft delete, and why protection isn't automated).</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <p>The first call every engine makes. It returns the endpoints the server supports and, under <code>defaults.prefix</code>, the warehouse id used in every later URL:</p>
+  <div class="cmd"><div class="box"><pre><code>curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | python3 -m json.tool | head -12</code></pre></div>
+    <p class="expected"><code>"defaults": {…, "prefix": "01a1…eb4"}</code>, then <code>"endpoints": ["GET /v1/config", "GET /v1/{prefix}/namespaces", …]</code>.</p></div>
+  <div class="cmd"><div class="box"><pre><code>WID=$(curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | python3 -c "import json,sys; print(json.load(sys.stdin)['defaults']['prefix'])")
+curl -s "localhost:8181/catalog/v1/$WID/namespaces"
+curl -s "localhost:8181/catalog/v1/$WID/namespaces/sandbox/tables/flights" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['metadata-location']); print(len(d['metadata']['snapshots']), 'snapshots')"</code></pre></div>
+    <p class="expected"><code>{"namespaces":[["bronze"],["silver"],["gold"],["audit"],["sandbox"]]}</code>; then the table's current file, <code>s3://lakehouse/sandbox/flights-…/metadata/00004-….gz.metadata.json</code>, and <code>4 snapshots</code>. That path is "the table".</p></div>
+  <p>Lakekeeper's own state lives in Postgres. Peek at its tables (read-only), then quit with <code>\q</code>:</p>
+  <div class="cmd"><div class="box"><pre><code>make psql DB=lakekeeper</code></pre></div>
+    <p class="expected">at the <code>lakekeeper=#</code> prompt, <code>\dt</code> lists tables such as <code>warehouse</code>, <code>namespace</code> and <code>tabular</code>.</p></div>
+
+  <h3>Tour</h3>
+  <ol>
+    <li><a href="http://localhost:8181/ui/">Lakekeeper UI</a> → <code>px4</code> → <code>bronze</code> → <code>telemetry_raw</code> → <b>Preview</b>. DuckDB, compiled to WebAssembly, runs in your browser. It asked the catalog for temporary credentials and read Parquet straight from RustFS.</li>
+    <li>On the same table: <b>Details</b> (location, current snapshot, partitioning), <b>Files</b> (data files) and <b>Health</b> (a dozen checks, e.g. "Very small files detected", snapshot count, partition skew).</li>
+    <li>Any namespace → <b>Deleted</b> tab: dropped tables waiting out their 7 days, with a Restore button. Don't restore <code>audit</code>'s entries; they were dropped on purpose (Phase 10).</li>
+  </ol>
+
+  <div class="lab">
+    <h4>Drop, restore, protect</h4>
+    <ol>
+      <li>Drop your sandbox table: <code>make trino SQL="DROP TABLE sandbox.flights"</code>. Then <code>make trino SQL="SELECT count(*) FROM sandbox.flights"</code> fails with "does not exist".</li>
+      <li>In the Lakekeeper UI: <code>px4</code> → <code>sandbox</code> → <b>Deleted</b>. <code>flights</code> is listed, "expires in 7 days". Click the <b>Restore</b> icon (<i>Table restored successfully</i>).</li>
+      <li>Query again: <code>make trino SQL="SELECT count(*) FROM sandbox.flights"</code>. Every row is back. Dropped, not destroyed.</li>
+      <li>Now protect it. Open the table → <b>Settings</b> (top right) → <b>Table settings</b> → switch on <b>Deletion protected</b> → <b>Save settings</b>.</li>
+      <li>Try to drop it: <code>make trino SQL="DROP TABLE sandbox.flights"</code>. Refused: <code>Cannot delete protected tabular … without force flag</code>.</li>
+      <li class="undo"><b>Undo:</b> Settings → Table settings → switch protection off → Save settings. Keep the table; later lessons use it.</li>
+    </ol>
+  </div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> List every soft-deleted table through the management API. When does each one expire?</p>
+    <div class="cmd"><div class="box"><pre><code>WID=$(curl -s "localhost:8181/catalog/v1/config?warehouse=px4" | python3 -c "import json,sys; print(json.load(sys.stdin)['defaults']['prefix'])")
+curl -s "localhost:8181/management/v1/warehouse/$WID/deleted-tabulars" | python3 -c "import json,sys; [print(t['namespace'], t['name'], t['expiration-date'][:10]) for t in json.load(sys.stdin)['tabulars']]"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p>Each line shows the namespace, the name and an expiration date 7 days after the drop. You'll also see small <code>silver</code> objects ending in <code>__dbt_tmp</code>: dbt drops temporary objects on every build, and soft delete keeps even those for 7 days (lesson 10).</p>
+    </details>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="a">
+      <p>Two writers commit to the same table at the same moment. What prevents a lost update?</p>
+      <button class="opt" data-opt="a">The catalog's compare-and-swap: the second commit is refused and must retry on the new state</button>
+      <button class="opt" data-opt="b">S3 merges the two files</button>
+      <button class="opt" data-opt="c">The second writer overwrites the first</button>
+      <p class="why">This is why <code>drone_ingest</code>'s <code>append</code> retries on <code>CommitFailedException</code>: parallel ingestion tasks really do race.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>How does DuckDB in your browser read a table without knowing the S3 keys?</p>
+      <button class="opt" data-opt="a">The keys are embedded in the web page</button>
+      <button class="opt" data-opt="b">It asks Trino for the rows</button>
+      <button class="opt" data-opt="c">The catalog vends short-lived credentials scoped to that table</button>
+      <p class="why">Vended credentials let the catalog control access per table. They're temporary, so a leaked key soon stops working.</p>
+    </div>
+    <div class="q" data-answer="b">
+      <p>What's the difference between soft delete and protection?</p>
+      <button class="opt" data-opt="a">None, they're the same feature</button>
+      <button class="opt" data-opt="b">Soft delete lets you undo a drop; protection refuses the drop in the first place</button>
+      <button class="opt" data-opt="c">Protection deletes after 7 days</button>
+      <p class="why">Soft delete is set on the whole warehouse (by <code>setup</code>); protection is turned on per table, here by hand.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l07" data-part="Part II · Storage" data-title="The SQL engine (Trino)" data-minutes="30">
+  <div class="kicker">Lesson 7 · 30 min</div>
+  <h2>The SQL engine: Trino</h2>
+  <p class="lead">Trino runs every SQL statement in this platform, yet it stores nothing. This lesson covers separating storage from compute, and how a filter on the right column skips most of a table.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain the separation of storage and compute, and what a connector is.</li>
+    <li>Measure partition pruning with <code>EXPLAIN ANALYZE</code>.</li>
+    <li>Find dbt's and the dashboards' queries in the Trino UI.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>Storage and compute are separate.</b> The data lives in RustFS and the table metadata in Lakekeeper. Trino only <i>computes</i>: it plans a query, reads the files it needs, and returns the result. You could delete the Trino container and lose nothing, or point a second engine at the same tables.</li>
+    <li><b>Catalogs and connectors.</b> Each Trino <i>catalog</i> is a connector plus its config. Here, <code>iceberg</code> is the lakehouse (via Lakekeeper) and <code>tpch</code> is a built-in generator of benchmark data. A query can even join across catalogs.</li>
+    <li><b>Coordinator and workers.</b> A real cluster has one coordinator that plans the query and many workers that read files in parallel. Here, one node does both. Each file (or piece of one) is a <b>split</b>, the unit of parallel work.</li>
+    <li><b>Pruning.</b> Using partition metadata and file statistics, the engine drops whole files before reading them. Fewer splits means faster, cheaper queries.</li>
+    <li><b>Memory limits.</b> Trino holds intermediate results in memory. Here it's capped (2 GB heap, 1 GB per query) to fit an 8 GB laptop.</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../infrastructure/trino/catalog/iceberg.properties">infrastructure/trino/catalog/iceberg.properties</a>: the <code>iceberg</code> catalog (REST catalog URI, S3 endpoint and keys from the environment).</li>
+    <li><a href="../infrastructure/trino/etc/config.properties">infrastructure/trino/etc/config.properties</a> and <a href="../infrastructure/trino/etc/jvm.config">jvm.config</a>: single node, memory caps.</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make trino SQL="SHOW CATALOGS"
+make trino SQL="SELECT n.name, count(*) AS customers FROM tpch.tiny.customer c JOIN tpch.tiny.nation n ON c.nationkey = n.nationkey GROUP BY 1 ORDER BY 2 DESC LIMIT 3"</code></pre></div>
+    <p class="expected"><code>"iceberg" "system" "tpch"</code>; then <code>"MOROCCO","72"</code>, <code>"IRAN","72"</code>, <code>"CANADA","69"</code>. The second query is a normal SQL join over generated data, with no files at all.</p></div>
+  <p>Now partition pruning. <code>bronze.logs_index_raw</code> is partitioned by month of <code>log_date</code>. Run the same count with and without a filter on that column and compare the scan:</p>
+  <div class="cmd"><div class="box"><pre><code>make trino SQL="EXPLAIN ANALYZE SELECT count(*) FROM bronze.logs_index_raw" | grep -E "TableScan|Splits:"
+make trino SQL="EXPLAIN ANALYZE SELECT count(*) FROM bronze.logs_index_raw WHERE log_date >= date '2026-10-01'" | grep -E "TableScan|Splits:"</code></pre></div>
+    <div class="expected"><pre>└─ TableScan[table = iceberg:bronze.logs_index_raw$data@…]
+Input: 315402 rows (0B), Splits: 23, …
+└─ TableScan[table = iceberg:bronze.logs_index_raw$data@… constraint on [log_date]]
+Input: 6021 rows (0B), Splits: 2, …</pre></div></div>
+  <p>With the filter, Trino read 2 files instead of 23. The partition metadata showed the other months couldn't match:</p>
+  <div class="cmd"><div class="box"><pre><code>make trino SQL='SELECT partition, record_count, file_count FROM bronze."logs_index_raw$partitions" ORDER BY 1 DESC LIMIT 3'</code></pre></div>
+    <p class="expected"><code>{log_date_month=681}</code> (October 2026, counted in months since 1970) with <code>6021</code> rows in <code>2</code> files, then earlier months.</p></div>
+
+  <h3>Tour</h3>
+  <ol>
+    <li>Open the <a href="http://localhost:8085/ui/">Trino UI</a> (type any username).</li>
+    <li>Under <b>Query details</b>, each query shows its <b>user</b> and source: <code>dbt</code> (transformations), <code>charts</code> (dashboards), <code>airflow</code> (maintenance), and <code>trino</code> / <code>trino-cli</code> for your <code>make trino</code> commands.</li>
+    <li>Click one of your <code>EXPLAIN ANALYZE</code> queries: elapsed time, rows read, and the <b>Live plan</b> / <b>Stage performance</b> views of the same plan you printed.</li>
+  </ol>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Does a filter on <code>log_id</code> prune partitions of <code>bronze.logs_index_raw</code>? Predict, then check:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="EXPLAIN ANALYZE SELECT count(*) FROM bronze.logs_index_raw WHERE log_id = '0562512f-8c77-4269-8b39-797ae9cf0935'" | grep -E "Scan|Splits:"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p>Partition pruning, no. The plan shows <code>ScanFilterProject[… filterPredicate = (log_id = …)]</code> with <code>Splits: 23</code>: every file is opened, because the partitions are by month of <code>log_date</code>. Trino can still skip files using the per-file min/max statistics of <code>log_id</code>, but UUIDs are random, so every file's range covers almost everything and few files get skipped. Choose the partition column to match how the table is filtered most often.</p>
+    </details>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="c">
+      <p>Where does Trino store the data of <code>gold.mart_flights_by_class_month</code>?</p>
+      <button class="opt" data-opt="a">In its own disk volume</button>
+      <button class="opt" data-opt="b">In PostgreSQL</button>
+      <button class="opt" data-opt="c">Nowhere: the files are in RustFS and the metadata pointer in Lakekeeper</button>
+      <p class="why">Trino is compute only. That separation lets several engines share one copy of the data.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>What is a split?</p>
+      <button class="opt" data-opt="a">A unit of parallel work, typically one data file or part of one</button>
+      <button class="opt" data-opt="b">A partition of the table</button>
+      <button class="opt" data-opt="c">A failed query</button>
+      <p class="why">Fewer splits means less to read. Pruning reduces splits before any data is read.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l08" data-part="Part III · Ingestion and orchestration" data-title="The ingestion code" data-minutes="50">
+  <div class="kicker">Lesson 8 · 50 min</div>
+  <h2>The ingestion code: <code>drone_ingest</code></h2>
+  <p class="lead">Ingestion is the code that talks to the outside world, so it's where most failures happen. This lesson covers the patterns that make it safe: small commands with machine-readable results, validation with a dead-letter table, audit logs, polite retries and guards.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain why the code is split into pure functions and I/O, and how that makes it testable.</li>
+    <li>Read the audit and rejection tables to answer "what did the pipeline do?".</li>
+    <li>Trigger a guard and a failing test on purpose, then undo both.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <h4>Small commands, structured results</h4>
+  <p><code>drone_ingest</code> is one CLI with six commands, one per step:</p>
+<pre class="diagram">snapshot-index ─▶ load-index                         (the index)
+plan-ulogs ─▶ fetch-ulogs (per batch) ─▶ parse-ulogs (per batch)   (flight files)
+init-tables                                            (create missing tables)</pre>
+  <p>Each command prints <b>one JSON summary as its last line</b> on stdout, e.g. <code>{"command": "plan-ulogs", "entries": 2, "batches": 1, "out": "…/plan.json"}</code>. Logs go to stderr, each tagged with <code>run_id=… cmd=…</code>. Airflow stores that last line as the task's result (XCom), and the next task reads it. The CLI also runs on your laptop, so every step can be tested outside Airflow.</p>
+  <h4>Pure functions vs I/O</h4>
+  <p>Diffing records, validating them and parsing a ULog are <b>pure functions</b>: data in, data out, no network, no S3. Downloading and writing tables are I/O. Keeping them apart means the tricky logic is tested in a second with small fixture files (<code>ingest/tests/fixtures/</code>), while the I/O stays thin.</p>
+  <h4>Validate, don't crash: the dead-letter table</h4>
+  <p>A <b>contract</b> (a pydantic model) checks only the fields the pipeline relies on: <code>log_id</code> must be a UUID, <code>log_date</code> a date, durations integers. A record that fails is not dropped silently, and it doesn't crash the load either. It goes to <b><code>bronze.rejected_records</code></b> with a reason (<code>invalid_log_id</code>, <code>missing_log_date</code>, …). Everything else in the record stays raw for silver to clean.</p>
+  <h4>Audit and event logs</h4>
+  <ul>
+    <li><code>audit.ingestion_runs</code>: one row per command run (what, status, counts, bytes, duration).</li>
+    <li><code>audit.ulog_downloads</code>: an append-only <b>event log</b> per flight file: <code>downloaded</code> → <code>parsed</code>, or <code>rejected</code> (terminal: <code>not_found</code>, <code>too_large</code>, <code>parse_error</code>…), or <code>failed</code> (retried next run). A file's current state is its latest event. That's how the planner knows what's left to do.</li>
+  </ul>
+  <h4>Be polite, be safe</h4>
+  <ul>
+    <li><b>Retries with backoff</b>, following PX4's own download script: on 503, wait <code>Retry-After</code> or 30·2<sup>n</sup> s (max 300); on 403/444 (blocked), abort the whole run; on 404, skip; on anything else, retry up to 5 times. Every request sends an identifying User-Agent.</li>
+    <li><b>Bounded concurrency</b>: 4 downloads at a time, in batches of 50.</li>
+    <li><b>Verify what you got</b>: a truncated ULog parses without any error, so fetch compares the downloaded size with <code>Content-Length</code>.</li>
+    <li><b>Disk guard</b>: before a batch, compare free disk with the batch's total size, and refuse if less than <code>MIN_FREE_DISK_GB</code> would remain.</li>
+    <li><b>Concurrent commits</b>: parallel tasks append to the same Iceberg table. When the catalog refuses a commit because someone else committed first, <code>append</code> retries.</li>
+  </ul>
+  <h4>Parsing: from 100 Hz to 1 Hz</h4>
+  <p>A ULog has dozens of topics, each a time series at its own rate. The parser averages each second (and keeps the last value for states such as arming), producing <b>one telemetry row per second</b>. Missing topics become null columns. Timestamps are microseconds since boot, so UTC comes from the GPS topic when there's a fix.</p>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../ingest/src/drone_ingest/cli.py">cli.py</a>: the six commands, the JSON summaries, the log format.</li>
+    <li><a href="../ingest/src/drone_ingest/schemas.py">schemas.py</a>: the contract (<code>IndexRecord</code>) and the rejection reasons.</li>
+    <li><a href="../ingest/src/drone_ingest/http.py">http.py</a>: the retry policy and the User-Agent.</li>
+    <li><a href="../ingest/src/drone_ingest/ulog.py">ulog.py</a>: plan, fetch (disk guard, size check), parse (1 Hz).</li>
+    <li><a href="../ingest/src/drone_ingest/catalog.py">catalog.py</a> and <a href="../ingest/src/drone_ingest/audit.py">audit.py</a>: table definitions, retried appends, audit rows.</li>
+    <li><a href="../ingest/tests/">ingest/tests/</a>: 20 tests over real fixtures (<a href="../ingest/tests/fixtures/README.md">fixtures/README.md</a> lists each case).</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make test</code></pre></div>
+    <p class="expected"><code>20 passed</code> in about 2 s: no network, no services.</p></div>
+  <div class="cmd"><div class="box"><pre><code>docker compose exec airflow /opt/ingest-venv/bin/drone-ingest --help</code></pre></div>
+    <p class="expected">usage with <code>{init-tables,snapshot-index,load-index,plan-ulogs,fetch-ulogs,parse-ulogs}</code>.</p></div>
+  <p>What has the pipeline done with flight files so far?</p>
+  <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT status, coalesce(reason, '-') AS reason, count(*) FROM audit.ulog_downloads GROUP BY 1, 2 ORDER BY 3 DESC"
+make trino SQL="SELECT entity, reason, count(*) FROM bronze.rejected_records GROUP BY 1, 2"</code></pre></div>
+    <p class="expected"><code>"downloaded","-","88"</code>, <code>"parsed","-","88"</code>, <code>"downloaded","already_in_landing","20"</code>; and no rejected records yet.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Some events say <code>downloaded</code> with reason <code>already_in_landing</code>. What happened there, and why record it at all?</p>
+    <details><summary>Show answer</summary>
+      <p>Fetch found the file already in landing (an earlier run had downloaded it), so it skipped the download, which is idempotent, and still recorded an event. The event log is meant to explain every decision. Lesson 1's trace showed one log with exactly this sequence: <code>downloaded</code>, <code>downloaded / already_in_landing</code>, <code>parsed</code>.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> <code>bronze.rejected_records</code> is empty. Does that mean validation doesn't work?</p>
+    <details><summary>Show answer</summary>
+      <p>No. The real records simply pass the contract. The unit tests feed a fixture of 9 corrupt records (<code>dbinfo_corrupt.json</code>) and check that each lands with its expected reason (<code>test_corrupt_records_are_rejected_with_reasons</code>). An empty dead-letter table is good news, and tests are what prove the path works.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> Why does the contract check only four fields, instead of every field in the record?</p>
+    <details><summary>Show answer</summary>
+      <p>It checks what the <i>pipeline</i> depends on: the key (<code>log_id</code>), the partition column (<code>log_date</code>), and the fields whose type would break parsing. Rejecting a whole record over, say, a junk rating would throw away good data. Those cosmetic defects are cleaned in silver, where the rule is visible SQL and can change without re-downloading anything.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>Trip the disk guard</h4>
+    <ol>
+      <li>Plan one flight file for a past day (writes only a small plan file):<br><code>docker compose exec -e MAX_ULOGS_PER_RUN=1 airflow /opt/ingest-venv/bin/drone-ingest plan-ulogs --start 2026-10-10 --end 2026-10-11 --out /opt/airflow/work/course/plan.json</code></li>
+      <li>Fetch it, but demand an impossible 100,000 GB of free space:<br><code>docker compose exec -e MIN_FREE_DISK_GB=100000 airflow /opt/ingest-venv/bin/drone-ingest fetch-ulogs --plan /opt/airflow/work/course/plan.json</code></li>
+      <li>It stops <b>before downloading</b>: <code>DiskGuardError: batch needs … GB, … GB free: would leave … GB &lt; MIN_FREE_DISK_GB=100000.0</code>. No file landed and no audit event was written.</li>
+      <li class="undo"><b>Undo:</b> remove the plan file: <code>docker compose exec airflow rm -rf /opt/airflow/work/course</code></li>
+    </ol>
+  </div>
+  <div class="lab">
+    <h4>Weaken the contract, let the tests catch it</h4>
+    <ol>
+      <li>In <a href="../ingest/src/drone_ingest/schemas.py">ingest/src/drone_ingest/schemas.py</a>, change <code>log_id: UUID</code> to <code>log_id: str</code> (any string is now accepted).</li>
+      <li>Run <code>make test</code>: <code>1 failed, 19 passed</code>. The record with <code>log_id = "not-a-uuid"</code> was loaded instead of rejected: <code>AssertionError … 'not-a-uuid'</code> in <code>test_corrupt_records_are_rejected_with_reasons</code>.</li>
+      <li class="undo"><b>Undo:</b> <code>git checkout -- ingest/src/drone_ingest/schemas.py</code>, then <code>make test</code> → <code>20 passed</code>, and <code>git status</code> is clean.</li>
+    </ol>
+  </div>
+  <div class="note">The code is baked into the Airflow image. If you ever change <code>ingest/src</code> for real, run <code>make up</code>, which rebuilds the image (cached, seconds), or the containers keep running the old code. That actually happened during this project (CLAUDE.md, Phase 10, finding 8).</div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>A record arrives with <code>log_date = "not a date"</code>. What happens?</p>
+      <button class="opt" data-opt="a">The whole load fails</button>
+      <button class="opt" data-opt="b">That record goes to <code>bronze.rejected_records</code> with reason <code>invalid_log_date</code>; the rest load</button>
+      <button class="opt" data-opt="c">It's loaded and silver nulls the date</button>
+      <p class="why">The dead-letter pattern: bad records are kept, with a reason, and never block good ones.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>PX4 answers <code>403</code>. What should the client do?</p>
+      <button class="opt" data-opt="a">Retry 5 times with backoff</button>
+      <button class="opt" data-opt="b">Skip that file and continue</button>
+      <button class="opt" data-opt="c">Abort the whole run: we've been blocked</button>
+      <p class="why">Retrying after being blocked only makes it worse. A 503 means "busy, try later"; a 403 means "stop".</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Why does each command end with a JSON line?</p>
+      <button class="opt" data-opt="a">So the orchestrator can pass a machine-readable result to the next task</button>
+      <button class="opt" data-opt="b">For the dashboards</button>
+      <button class="opt" data-opt="c">To compress the logs</button>
+      <p class="why">BashOperator pushes the last stdout line to XCom; for example, <code>plan_ulogs</code>'s JSON tells the mapped tasks how many batches to create.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l09" data-part="Part III · Ingestion and orchestration" data-title="Orchestration (Airflow)" data-minutes="55">
+  <div class="kicker">Lesson 9 · 55 min</div>
+  <h2>Orchestration: Airflow</h2>
+  <p class="lead">An orchestrator decides what runs, when, in which order, and what happens when something fails. It doesn't do the work itself. This lesson walks through the daily ingestion DAG and makes it fail on purpose.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Read a DAG: tasks, dependencies, schedule, params and templates.</li>
+    <li>Explain short-circuiting, trigger rules, dynamic task mapping and retries with backoff.</li>
+    <li>Trigger runs safely, find a task's rendered command and its result (XCom), and watch retries exhaust.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>DAG</b> (directed acyclic graph): tasks plus the dependencies between them (<code>a &gt;&gt; b</code> means "b after a"). It's defined in Python, but the file only <i>declares</i> the graph; it doesn't run the work.</li>
+    <li><b>Operator:</b> a template for a task. <code>BashOperator</code> runs a shell command (here, the <code>drone-ingest</code> CLI); <code>@task</code> turns a Python function into a task.</li>
+    <li><b>The moving parts:</b> the <i>DAG processor</i> parses DAG files; the <i>scheduler</i> decides what's due; the <i>executor</i> runs tasks (LocalExecutor: as processes in the same container); the <i>API server</i> serves the UI. Here <code>airflow standalone</code> runs all four in one container.</li>
+    <li><b>Schedule:</b> <code>0 2 * * *</code> in America/Hermosillo (09:00 UTC), when yesterday (UTC) is complete. <code>catchup=False</code> means missed days aren't replayed one by one. But <b>unpausing a DAG runs its latest missed slot immediately</b>; that's why the course always caps downloads.</li>
+    <li><b>Params and templating:</b> a run can receive params (<code>max_ulogs</code>, <code>day</code>, <code>index_url</code>). Commands are Jinja templates rendered at run time: <code>plan-ulogs --start {{ day }} --end {{ day + 1 }}</code> becomes <code>--start 2026-10-14 --end 2026-10-15</code>.</li>
+    <li><b>XCom:</b> small results passed between tasks. Here, each CLI command's JSON summary.</li>
+    <li><b>Short-circuit:</b> <code>index_changed</code> returns <i>None</i> when the index answered 304, which <b>skips</b> <code>load_index</code>.</li>
+    <li><b>Trigger rules:</b> by default a task runs only if all upstream tasks succeeded. <code>plan_ulogs</code> uses <code>none_failed</code>, so it runs whether <code>load_index</code> ran or was skipped, but not if something upstream <i>failed</i>.</li>
+    <li><b>Dynamic task mapping:</b> <code>fetch_ulogs</code> and <code>parse_ulogs</code> are expanded at run time into one task per batch (<code>fetch_ulogs[0]</code>, <code>[1]</code>, …), with at most 4 running at once.</li>
+    <li><b>Retries with exponential backoff:</b> 3 retries, each delay double the previous one (120 s, 240 s, …, capped at 30 min). The base delay comes from an Airflow <b>Variable</b>, so a lab can shorten it.</li>
+  </ul>
+<pre class="diagram">snapshot_index ─▶ index_changed ─▶ load_index        (on a 304: load_index skipped)
+                                         │
+                                         ▼  none_failed
+                                    plan_ulogs ─▶ fetch_commands ─▶ fetch_ulogs[0..N]
+                                              └─▶ parse_commands ─▶ parse_ulogs[0..N]   (after fetch)</pre>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dags/px4_ingest_daily.py">dags/px4_ingest_daily.py</a>: the daily DAG. Read it top to bottom; it's ~90 lines.</li>
+    <li><a href="../dags/px4_common.py">dags/px4_common.py</a>: shared pieces (<code>RUN_DAY</code>, the retry defaults read from the Variable, the CLI wrapper, the assets).</li>
+    <li><a href="../dags/px4_maintenance.py">dags/px4_maintenance.py</a>: a weekly DAG with Python tasks (lesson 15).</li>
+  </ul>
+
+  <h3>Tour</h3>
+  <ol>
+    <li><a href="http://localhost:8080">Airflow</a> → <b>Dags</b>: three DAGs. Only <code>px4_transform</code> is unpaused.</li>
+    <li>Open <code>px4_ingest_daily</code>. On the left is the <b>grid</b>: one row per task, one column per run, colored by state. The icon next to the grid switches to the <b>graph</b>. The tabs on the right are Overview, Runs, Tasks, Calendar, Code, Details…</li>
+    <li>Older columns show two extra rows, <code>api_healthcheck</code> and <code>purge_expired_ulogs</code>. Those tasks existed in an earlier version of the DAG (Phase 10 removed them), and Airflow keeps each run's history with the version it ran.</li>
+    <li>Click a green <code>plan_ulogs</code> square. <b>Logs</b> shows the exact command that ran (<code>Running command: … plan-ulogs --start 2026-10-14 --end 2026-10-15</code>) and its JSON output. <b>Rendered Templates</b> shows the template after Jinja. <b>Storage → XCom</b> shows the result passed on.</li>
+    <li>Click a <code>fetch_ulogs [ ]</code> square: one entry per mapped batch.</li>
+    <li>Click <b>Trigger</b> (top right): the form shows the params <code>day</code>, <code>max_ulogs</code> and <code>index_url</code> with their descriptions.</li>
+  </ol>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make airflow ARGS="dags list"
+make airflow ARGS="tasks list px4_ingest_daily"
+make airflow ARGS="dags list-runs px4_ingest_daily"</code></pre></div>
+    <p class="expected">the three DAGs with their paused state; the 8 tasks; past runs with their state (<code>success</code>, <code>failed</code>…) and times.</p></div>
+  <p>Trigger a small run. A paused DAG doesn't start runs, so unpause, trigger, then pause again. Check first that <code>PX4_MAX_ULOGS_PER_RUN</code> is set in <code>.env</code>, because unpausing may also start the latest missed daily slot:</p>
+  <div class="cmd"><div class="box"><pre><code>grep PX4_MAX_ULOGS_PER_RUN .env
+make airflow ARGS="dags unpause px4_ingest_daily"
+make airflow ARGS="dags trigger px4_ingest_daily -c '{\"max_ulogs\": 2}'"</code></pre></div>
+    <p class="expected">a number (e.g. <code>PX4_MAX_ULOGS_PER_RUN=25</code>), then a new <code>manual__…</code> run. Watch it in the grid; it takes ~15 s. Then pause the DAG again: <code>make airflow ARGS="dags pause px4_ingest_daily"</code>.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> In your run, <code>load_index</code> is pink (<i>skipped</i>) but <code>plan_ulogs</code> ran. Why each?</p>
+    <details><summary>Show answer</summary>
+      <p>Open <code>snapshot_index</code> → Storage → XCom: <code>"status": "not_modified"</code>. The index had already been loaded today, so the server answered 304. <code>index_changed</code> then short-circuited, which skipped <code>load_index</code>. <code>plan_ulogs</code> has trigger rule <code>none_failed</code>: a skipped upstream is fine, so the flight files of yesterday were still planned and fetched.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> Re-process a past upload day. Unpause, trigger with <code>{"day": "2026-10-10", "max_ulogs": 2}</code> (in the Trigger form, or <code>-c '{\"day\": \"2026-10-10\", \"max_ulogs\": 2}'</code>), then pause. What window did <code>plan_ulogs</code> use, and where can you see it?</p>
+    <details><summary>Show answer</summary>
+      <p><code>plan_ulogs</code> → Logs: <code>plan-ulogs --start 2026-10-10 --end 2026-10-11</code>, and its XCom: <code>"window": ["2026-10-10", "2026-10-11"]</code>. This is how you backfill one day: same DAG, one param. Logs already parsed for that day are skipped, so it's safe to repeat.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>When the API is down</h4>
+    <ol>
+      <li>Shorten the retry delay to 5 s, and make Airflow re-read the DAG files (the delay is read when a DAG is parsed):<br><code>make airflow ARGS="variables set px4_retry_delay_seconds 5"</code><br><code>make airflow ARGS="dags reserialize"</code></li>
+      <li>Unpause and trigger with an API address that doesn't exist:<br><code>make airflow ARGS="dags unpause px4_ingest_daily"</code><br><code>make airflow ARGS="dags trigger px4_ingest_daily -c '{\"index_url\": \"https://px4-api.invalid/dbinfo\", \"max_ulogs\": 1}'"</code></li>
+      <li>Watch the grid. <code>snapshot_index</code> turns orange (<i>up for retry</i>) three times. Each try takes ~50 s: the client itself retries 5 times, 10 s apart. Its log shows <code>URLError on https://px4-api.invalid/dbinfo: … Name or service not known; retry 1/5 in 10s</code> … <code>giving up … after 5 attempts</code>.</li>
+      <li>After ~4½ minutes the run fails: <code>snapshot_index</code> <b>failed</b> (try 4), and every other task is <b>upstream_failed</b>, including <code>plan_ulogs</code>. <code>none_failed</code> tolerates <i>skipped</i>, not <i>failed</i>. Nothing downstream ran against bad data.</li>
+      <li class="undo"><b>Undo:</b> <code>make airflow ARGS="variables delete px4_retry_delay_seconds"</code>, <code>make airflow ARGS="dags reserialize"</code> and <code>make airflow ARGS="dags pause px4_ingest_daily"</code>. The failed run stays in the history; that's fine.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="c">
+      <p>What does the DAG file actually do when Airflow parses it?</p>
+      <button class="opt" data-opt="a">Downloads the index</button>
+      <button class="opt" data-opt="b">Runs every task once</button>
+      <button class="opt" data-opt="c">Declares tasks and dependencies; the scheduler runs them later</button>
+      <p class="why">Parsing happens often, so DAG files must be cheap to import and must never do the work themselves.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p><code>load_index</code> was skipped. Will <code>plan_ulogs</code> (trigger rule <code>none_failed</code>) run?</p>
+      <button class="opt" data-opt="a">Yes: skipped isn't failed</button>
+      <button class="opt" data-opt="b">No: an upstream didn't succeed</button>
+      <button class="opt" data-opt="c">Only on the next day</button>
+      <p class="why">With the default rule (<code>all_success</code>) it would have been skipped too, and no flight files would be fetched on days the index didn't change.</p>
+    </div>
+    <div class="q" data-answer="b">
+      <p>Why are <code>fetch_ulogs</code> tasks created at run time instead of being written in the DAG?</p>
+      <button class="opt" data-opt="a">To save memory</button>
+      <button class="opt" data-opt="b">The number of batches depends on the day's data, known only after <code>plan_ulogs</code></button>
+      <button class="opt" data-opt="c">Airflow can't run BashOperators in parallel</button>
+      <p class="why">Dynamic task mapping expands one task per element of a list produced earlier in the same run.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l10" data-part="Part IV · Transformation and modeling" data-title="Transformation (dbt)" data-minutes="55">
+  <div class="kicker">Lesson 10 · 55 min</div>
+  <h2>Transformation: dbt</h2>
+  <p class="lead">The "T" of ELT. You write SELECT statements; dbt works out the order, turns each SELECT into a table, tests the results and documents everything. This lesson covers how a project is wired and what dbt actually sends to Trino.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain <code>source()</code>, <code>ref()</code> and the lineage graph dbt builds from them.</li>
+    <li>Tell the materializations apart (table, incremental merge/append, seed, snapshot), and why each model uses the one it does.</li>
+    <li>Read compiled SQL, preview a model, and change one end to end.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>A model is a SELECT</b> in a <code>.sql</code> file. dbt wraps it in the DDL/DML needed to persist it (<code>CREATE TABLE … AS</code>, <code>MERGE</code>…) and runs it on Trino. You never write <code>INSERT</code> or <code>DROP</code>.</li>
+    <li><b><code>source('bronze', 'telemetry_raw')</code></b> points at a table dbt reads but never writes. <b><code>ref('fct_flight')</code></b> points at another model. From these calls dbt builds the <b>lineage graph</b>, so it knows the run order and what's downstream of a change.</li>
+    <li><b>Materializations</b> (how a model is persisted):
+      <ul>
+        <li><b>table</b>: rebuilt from scratch each run. Here with <code>on_table_exists: replace</code>, so dbt issues <code>CREATE OR REPLACE TABLE</code> and each run becomes a new Iceberg snapshot of the <i>same</i> table.</li>
+        <li><b>incremental</b>: only processes new data. <code>stg_logs</code> uses <b>merge</b> on <code>log_id</code> (an edited index record replaces its row). <code>stg_telemetry</code> and <code>stg_log_messages</code> use <b>append</b> (those rows never change). Both read only bronze rows with <code>_ingested_at</code> newer than the latest already in the target.</li>
+        <li><b>seed</b>: a small CSV lookup table versioned in git (flight mode names, vehicle class mapping…).</li>
+        <li><b>snapshot</b>: keeps history of changing rows (SCD2, next lesson).</li>
+      </ul></li>
+    <li><b>Jinja and macros</b>: SQL files are templates. <code>{{ real_flights() }}</code> expands to <code>not is_simulation</code>; <code>{% if is_incremental() %}</code> adds the "only new rows" filter after the first run.</li>
+    <li><b><code>dbt build</code></b> runs seeds, models, snapshots and tests in lineage order, and skips everything downstream of a failure. <b>Selectors</b>: <code>-s fct_flight</code> (one model), <code>-s +fct_flight</code> (it and everything upstream), <code>-s tag:gold</code>.</li>
+  </ul>
+<pre class="diagram">bronze (sources) ──▶ stg_* (clean, incremental) ──▶ dim_* / fct_* (model) ──▶ mart_* (gold)
+seeds (CSV) ─────────┘                    snap_vehicles (SCD2) ──┘
+22 models · 6 seeds · 1 snapshot · 52 tests  =  81 nodes in one `dbt build`</pre>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dbt/dbt_project.yml">dbt/dbt_project.yml</a>: folders → schemas, materializations, tags, <code>on_table_exists: replace</code>.</li>
+    <li><a href="../dbt/models/sources/sources.yml">dbt/models/sources/sources.yml</a>: the bronze and audit sources, with a freshness rule.</li>
+    <li><a href="../dbt/models/silver/stg_logs.sql">dbt/models/silver/stg_logs.sql</a>: an incremental merge model; read the comments.</li>
+    <li><a href="../dbt/models/gold/mart_flights_by_class_month.sql">dbt/models/gold/mart_flights_by_class_month.sql</a>: a whole gold model in 11 lines.</li>
+    <li><a href="../dbt/macros/">dbt/macros/</a>: <code>generate_schema_name</code>, <code>real_flights</code>, <code>date_spine</code>, <code>reset_csv_table</code>.</li>
+    <li><code>dbt/target/compiled/</code>: the SQL after Jinja, written on every run (gitignored).</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make dbt</code></pre></div>
+    <p class="expected"><code>dbt debug</code>: profile, project and <code>Connection test: OK connection ok</code>, then <code>All checks passed!</code></p></div>
+  <p>The lineage of one gold table: everything it's built from, down to the sources:</p>
+  <div class="cmd"><div class="box"><pre><code>make dbt ARGS="ls -s +mart_flight_envelope --resource-type model --resource-type source --resource-type seed"</code></pre></div>
+    <div class="expected"><pre>px4_lakehouse.silver.fct_flight
+px4_lakehouse.gold.mart_flight_envelope
+px4_lakehouse.silver.stg_log_error_labels
+px4_lakehouse.silver.stg_logs
+px4_lakehouse.silver.stg_telemetry
+px4_lakehouse.duration_bands            (seeds)
+px4_lakehouse.mav_type_classes
+px4_lakehouse.rating_map
+source:px4_lakehouse.bronze.logs_index_raw
+source:px4_lakehouse.bronze.telemetry_raw</pre></div></div>
+  <p>See what dbt sends to Trino for an incremental model:</p>
+  <div class="cmd"><div class="box"><pre><code>make dbt ARGS="compile -s stg_telemetry"
+head -12 dbt/target/compiled/px4_lakehouse/models/silver/stg_telemetry.sql</code></pre></div>
+    <div class="expected"><pre>with source as (
+    select * from "iceberg"."bronze"."telemetry_raw"
+    where _ingested_at > (
+        select coalesce(max(_ingested_at), timestamp '1970-01-01 00:00:00 UTC') from "iceberg"."silver"."stg_telemetry")
+),</pre></div></div>
+  <p>Preview a model's rows without writing anything:</p>
+  <div class="cmd"><div class="box"><pre><code>make dbt ARGS="show -s mart_flight_envelope --limit 5"</code></pre></div>
+    <p class="expected">a small table: <code>vehicle_class</code>, <code>flights_with_telemetry</code>, average and p95 altitude range and speed…</p></div>
+  <p>Table models keep history across runs, because each build replaces the table in place:</p>
+  <div class="cmd"><div class="box"><pre><code>make trino SQL='SELECT committed_at, operation FROM gold."mart_flights_by_class_month$snapshots" ORDER BY committed_at'</code></pre></div>
+    <p class="expected">several snapshots, two per dbt run, that you can time-travel to (lesson 5).</p></div>
+  <div class="cmd"><div class="box"><pre><code>make dbt ARGS="docs generate --static"
+open dbt/target/static_index.html</code></pre></div>
+    <p class="expected">a single HTML file with every model, column, test and the lineage graph (click the graph icon at the bottom right). On Linux use <code>xdg-open</code>.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> In the compiled SQL above, what did <code>{{ source('bronze', 'telemetry_raw') }}</code> and <code>{{ this }}</code> become? And why the <code>coalesce</code>?</p>
+    <details><summary>Show answer</summary>
+      <p><code>"iceberg"."bronze"."telemetry_raw"</code> and <code>"iceberg"."silver"."stg_telemetry"</code> (the model's own table). The filter reads only bronze rows newer than the newest already in silver. Without <code>coalesce</code>, an <i>empty</i> target gives <code>max() = NULL</code>, and <code>x &gt; NULL</code> is never true, so the model would never insert anything, ever. That bug really happened on a clean install (CLAUDE.md, Phase 9).</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> Why does <code>stg_logs</code> use <b>merge</b> while <code>stg_telemetry</code> uses <b>append</b>?</p>
+    <details><summary>Show answer</summary>
+      <p>Index records can change upstream (a rating added later), and bronze then holds a newer version. Merging on <code>log_id</code> replaces the old row, keeping one row per log. Telemetry rows never change, and each flight file is parsed once, so appending the new rows is correct and cheaper.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>Change a model end to end</h4>
+    <ol>
+      <li>Open <a href="../dbt/models/silver/dim_flight_mode.sql">dbt/models/silver/dim_flight_mode.sql</a>. Add a comma after <code>s.mode_id is not null as is_known</code>, and a new line <code>'hello from the lab' as lab_note</code>.</li>
+      <li>Build just that model and its tests: <code>make dbt ARGS="build -s dim_flight_mode"</code> → <code>PASS=4 … ERROR=0</code>.</li>
+      <li>Query it: <code>make trino SQL="SELECT mode_id, mode_name, lab_note FROM silver.dim_flight_mode ORDER BY mode_id LIMIT 3"</code> → <code>"0","Manual","hello from the lab"</code>…</li>
+      <li class="undo"><b>Undo:</b> <code>git checkout -- dbt/models/silver/dim_flight_mode.sql</code>, then <code>make dbt ARGS="build -s dim_flight_mode"</code>. The column is gone (<code>Column 'lab_note' cannot be resolved</code>), because <code>CREATE OR REPLACE</code> rebuilt the table with the old schema. <code>git status</code> is clean.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>How does dbt know to build <code>stg_logs</code> before <code>fct_flight</code>?</p>
+      <button class="opt" data-opt="a">Alphabetical order</button>
+      <button class="opt" data-opt="b"><code>fct_flight</code> calls <code>ref('stg_logs')</code>, which adds an edge to the lineage graph</button>
+      <button class="opt" data-opt="c">A config file lists the order</button>
+      <p class="why">The order is never written down; it's derived from <code>ref()</code> and <code>source()</code>, so it can't drift from the code.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>What does <code>-s +fct_flight</code> select?</p>
+      <button class="opt" data-opt="a">Everything downstream of <code>fct_flight</code></button>
+      <button class="opt" data-opt="b">Only <code>fct_flight</code></button>
+      <button class="opt" data-opt="c"><code>fct_flight</code> and everything it depends on (upstream)</button>
+      <p class="why">A <code>+</code> before the name means its ancestors; after the name (<code>fct_flight+</code>), its descendants.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Why does this project use <code>on_table_exists: replace</code>?</p>
+      <button class="opt" data-opt="a">Each run becomes a new snapshot of the same Iceberg table (history, no dropped tables piling up)</button>
+      <button class="opt" data-opt="b">It's faster to write</button>
+      <button class="opt" data-opt="c">dbt requires it for Trino</button>
+      <p class="why">The default builds a temporary table, renames it and drops the old one, which loses the history and leaves a dropped table behind every run (soft delete keeps those for 7 days).</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l11" data-part="Part IV · Transformation and modeling" data-title="Data modeling" data-minutes="45">
+  <div class="kicker">Lesson 11 · 45 min</div>
+  <h2>Data modeling</h2>
+  <p class="lead">Modeling decides what a row means, which questions are easy to answer, and where business rules live. This lesson covers the silver and gold layers: cleaning, facts and dimensions, grain, and history.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain what silver cleans, and why rules belong there rather than in each query.</li>
+    <li>Read a star schema, and prove a table's grain with SQL.</li>
+    <li>Query SCD2 history, and see why a modeled mapping beats ad-hoc filters.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <h4>Silver: clean once, in one place</h4>
+  <p>Silver applies every cleaning rule from lesson 3, as SQL anyone can read:</p>
+  <ul>
+    <li>types from JSON strings;</li>
+    <li>sentinels to null (<code>wind_speed = -1</code>);</li>
+    <li>impossible values to null (durations outside 1–86,400 s);</li>
+    <li>honest names (<code>log_date</code> → <code>uploaded_date</code>);</li>
+    <li>the latest version per <code>log_id</code>;</li>
+    <li>derived columns (<code>vehicle_class</code> from a seed mapping, <code>is_simulation</code>, <code>fw_major_minor</code>).</li>
+  </ul>
+  <p>Every consumer then gets the same answer.</p>
+  <h4>Facts and dimensions (a star schema)</h4>
+  <ul>
+    <li><b>Facts</b> record events and measurements: <code>fct_flight</code> (one row per flight), <code>fct_mode_segment</code> (one row per flight × flight-mode segment), <code>fct_telemetry_1min</code> (one row per flight × minute).</li>
+    <li><b>Dimensions</b> describe the things facts refer to: <code>dim_vehicle</code>, <code>dim_flight_mode</code>, <code>dim_error_label</code>, <code>dim_date</code>.</li>
+  </ul>
+<pre class="diagram">              dim_vehicle            dim_date
+                   │ vehicle_uuid        │ uploaded_date
+                   ▼                     ▼
+dim_flight_mode ─▶ fct_mode_segment ◀── fct_flight ──▶ fct_telemetry_1min
+     mode_id            (log_id)        (log_id)            (log_id)</pre>
+  <h4>Grain</h4>
+  <p>A table's <b>grain</b> is what one row represents. Get it wrong and every sum double-counts. State it ("one row per flight"), then test it: <code>log_id</code> is <code>unique</code> and <code>not_null</code> in <code>fct_flight</code>.</p>
+  <h4>History: SCD type 2</h4>
+  <p>A vehicle can change its airframe or firmware. Overwriting the row loses the past; <b>SCD2</b> (slowly changing dimension, type 2) keeps every version with <code>dbt_valid_from</code> / <code>dbt_valid_to</code>. The current version has <code>dbt_valid_to IS NULL</code>. A dbt <b>snapshot</b> does this, comparing chosen columns on each run.</p>
+  <h4>Gold: built for one purpose</h4>
+  <p>Gold marts are small aggregates shaped for a dashboard, with a <b>contract</b> (fixed columns and types, lesson 13). They exclude simulator logs through one macro, <code>real_flights()</code>, so the rule can't be forgotten in one place and applied in another.</p>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dbt/models/silver/stg_logs.sql">dbt/models/silver/stg_logs.sql</a>: the cleaning rules, each commented.</li>
+    <li><a href="../dbt/models/silver/fct_flight.sql">dbt/models/silver/fct_flight.sql</a>: the central fact, with telemetry aggregated per flight.</li>
+    <li><a href="../dbt/snapshots/snap_vehicles.yml">dbt/snapshots/snap_vehicles.yml</a>: the SCD2 snapshot, <code>strategy: check</code> on <code>sys_hw</code>, <code>mav_type</code>, <code>airframe_type</code>, <code>airframe_name</code> and <code>fw_major_minor</code>.</li>
+    <li><a href="../dbt/seeds/mav_type_classes.csv">dbt/seeds/mav_type_classes.csv</a>: the vehicle-type → class mapping, a business rule as data.</li>
+    <li><a href="../dbt/macros/real_flights.sql">dbt/macros/real_flights.sql</a> and <a href="../dbt/models/gold/">dbt/models/gold/</a>: the 9 marts.</li>
+    <li><a href="../CLAUDE.md">CLAUDE.md</a>, section 6: the full data model.</li>
+  </ul>
+
+  <h3>Exercises</h3>
+  <div class="exercise">
+    <p><b>1. Prove the grain</b> of <code>fct_flight</code>: one row per flight.</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT count(*) AS rows, count(DISTINCT log_id) AS logs, count_if(is_simulation) AS simulated FROM silver.fct_flight"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p><code>"315402","315402","24647"</code>: rows equal distinct logs, so the grain holds, and bronze's ~315k records became exactly one row each. The dbt tests <code>unique</code> + <code>not_null</code> on <code>log_id</code> check this on every build. 24,647 flights are simulated, and gold leaves them out.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>2. Read SCD2 history.</b> Find a vehicle with more than one version:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT vehicle_uuid, airframe_name, fw_major_minor, dbt_valid_from, dbt_valid_to FROM silver.snap_vehicles WHERE vehicle_uuid IN (SELECT vehicle_uuid FROM silver.snap_vehicles WHERE dbt_valid_to IS NOT NULL LIMIT 1) ORDER BY dbt_valid_from"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p>Two rows for one vehicle, e.g. airframe <code>Generic Hexarotor x geometry</code> valid until 2026-10-15 02:17, then <code>Generic Quadcopter</code> from that moment, with <code>dbt_valid_to = NULL</code> (current). The pilot re-configured the vehicle, and both facts are kept. If you get no rows, no vehicle has changed yet in your data; history only starts when the snapshot first runs.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>3. Why model at all?</b> Count October 2026's real VTOL flights straight from bronze, the "quick" way, then from gold:</p>
+    <div class="cmd"><div class="box"><pre><code>make trino SQL="SELECT count(*) FROM bronze.logs_index_raw WHERE json_extract_scalar(payload, '$.mav_type') LIKE 'VTOL%' AND log_date >= date '2026-10-01' AND json_extract_scalar(payload, '$.sys_hw') NOT LIKE '%SITL%'"
+make trino SQL="SELECT logs FROM gold.mart_flights_by_class_month WHERE vehicle_class = 'vtol' AND month = date '2026-10-01'"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p><code>224</code> vs <code>460</code>. The quick query missed half the VTOLs: types like <code>Tiltrotor VTOL</code> and <code>Quad-rotor VTOL (Tailsitter)</code> don't <i>start</i> with "VTOL". The seed <code>mav_type_classes</code> lists all 8 VTOL types once (<code>make trino SQL="SELECT mav_type FROM silver.mav_type_classes WHERE vehicle_class = 'vtol'"</code>), and every model uses it. With <code>LIKE '%VTOL%'</code> the raw query also gives 460, but only because you went and found the rule. Modeling puts business rules in one place.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>4. One macro, one rule.</b> Compile a gold mart with and without simulator flights. Nothing is written; <code>compile</code> only renders the SQL:</p>
+    <div class="cmd"><div class="box"><pre><code>make dbt ARGS="compile -s mart_flights_by_class_month" | grep -A1 "^where"
+make dbt ARGS="compile -s mart_flights_by_class_month --vars '{include_simulation: true}'" | grep -A1 "^where"</code></pre></div></div>
+    <details><summary>Show answer</summary>
+      <p><code>where not is_simulation</code>, then <code>where true</code>. Every flight mart (8 of the 9; <code>mart_pipeline_runs</code> is about runs, not flights) calls <code>{{ real_flights() }}</code>, so a single variable switches the rule everywhere. Run the plain compile once more afterwards, so the files in <code>target/</code> match the default.</p>
+    </details>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>What is the grain of <code>fct_mode_segment</code>?</p>
+      <button class="opt" data-opt="a">One row per flight</button>
+      <button class="opt" data-opt="b">One row per flight × flight-mode segment</button>
+      <button class="opt" data-opt="c">One row per flight mode</button>
+      <p class="why">A flight that switched modes 5 times has 5 rows. Summing a per-flight value over this table would count each flight 5 times; that's why grain comes first.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Where should the rule "a Tiltrotor is a VTOL" live?</p>
+      <button class="opt" data-opt="a">Once, in a seed or silver model, used by everything downstream</button>
+      <button class="opt" data-opt="b">In each dashboard query</button>
+      <button class="opt" data-opt="c">In bronze, by editing the raw records</button>
+      <p class="why">Business rules repeated in many queries drift apart. Bronze stays raw so the rule can change and be rebuilt.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>In an SCD2 table, how do you get each vehicle's current version?</p>
+      <button class="opt" data-opt="a"><code>ORDER BY dbt_valid_from LIMIT 1</code></button>
+      <button class="opt" data-opt="b"><code>WHERE dbt_valid_from IS NULL</code></button>
+      <button class="opt" data-opt="c"><code>WHERE dbt_valid_to IS NULL</code></button>
+      <p class="why">The open-ended version is the current one; <code>dim_vehicle</code> does exactly that.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l12" data-part="Part IV · Transformation and modeling" data-title="dbt inside Airflow (Cosmos)" data-minutes="35">
+  <div class="kicker">Lesson 12 · 35 min</div>
+  <h2>dbt inside Airflow: Cosmos and data-aware scheduling</h2>
+  <p class="lead">The transform DAG has no clock. It runs when bronze changes, and every dbt model becomes its own Airflow task. This lesson covers why that matters, and shows a failing test stopping bad data before it's published.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain assets (data-aware scheduling) and how they chain the two DAGs.</li>
+    <li>Read Cosmos's task graph: <code>run</code> and <code>test</code> per model, detached multi-parent tests.</li>
+    <li>Watch a failing test block everything downstream, then recover.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <h4>One task per model</h4>
+  <p>Running <code>dbt build</code> as one big task works, but when it fails you see only "dbt failed", and a retry reruns all 81 nodes. <b>Cosmos</b> reads the dbt project and renders each model as Airflow tasks: <code>silver.stg_logs.run</code>, then <code>silver.stg_logs.test</code> with its tests. A model with no tests of its own is a single <code>…_run</code> task. You can see which model failed, read its log, and clear just that task.</p>
+  <p>A test that references two models (e.g. a relationship from <code>fct_flight</code> to <code>dim_vehicle</code>) would race if attached to only one of them, so Cosmos <b>detaches</b> it into its own task that waits for both parents (names ending in <code>_test</code>). In total: 49 tasks.</p>
+  <h4>Data-aware scheduling with assets</h4>
+  <p>An <b>asset</b> is a named piece of data, here an Iceberg table URI. Tasks declare the assets they update (<code>outlets</code>). When one succeeds, Airflow records an <b>asset event</b>, and any DAG <i>scheduled on</i> that asset starts.</p>
+<pre class="diagram">px4_ingest_daily                                    px4_transform (schedule = any of the 3)
+  load_index  ──▶ iceberg://px4/bronze/logs_index_raw   ─┐
+  parse_ulogs ──▶ iceberg://px4/bronze/telemetry_raw     ├─▶ seed → silver → gold → docs_generate ──▶ iceberg://px4/gold
+              └─▶ iceberg://px4/bronze/log_messages_raw ─┘   → check_charts → render_charts → upload_reports ──▶ s3://reports</pre>
+  <ul>
+    <li>Events that arrive while a transform run is already <b>queued</b> are merged into that run (one run, several events). The UI labels the first event "Triggered Dag Run" and the others "Included in Dag Run".</li>
+    <li><code>max_active_runs=1</code>: two transform runs never write the same tables at once.</li>
+    <li>Events that happen while the consumer DAG is <i>paused</i> don't queue a run.</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dags/px4_transform.py">dags/px4_transform.py</a>: the Cosmos setup (<code>DbtTaskGroup</code>, subprocess invocation of <code>/opt/dbt-venv/bin/dbt</code>, detached tests), the asset schedule, and the charts tasks.</li>
+    <li><a href="../dags/px4_common.py">dags/px4_common.py</a>: the three bronze assets.</li>
+    <li><a href="../dags/px4_ingest_daily.py">dags/px4_ingest_daily.py</a>: the <code>outlets</code> on <code>load_index</code> and <code>parse_ulogs</code>.</li>
+  </ul>
+
+  <h3>Tour</h3>
+  <ol>
+    <li>Airflow → <b>Assets</b> (left menu): 5 assets, each with its producing task and the DAG scheduled on it.</li>
+    <li><code>px4_ingest_daily</code> → <b>Overview</b> → <i>Created Asset Events</i>: each event shows "Triggered Dag Run: px4_transform" or "Included in Dag Run: px4_transform".</li>
+    <li>Open <code>px4_transform</code> and switch to the graph: groups <code>silver</code> and <code>gold</code>, with <code>.run</code>/<code>.test</code> pairs inside, between <code>seed</code> and <code>docs_generate</code>.</li>
+    <li>Its <b>Runs</b> tab: run ids start with <code>asset_triggered__</code>, and each takes about 2 minutes.</li>
+  </ol>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make airflow ARGS="tasks list px4_transform" | grep -E "stg_logs|^seed|_charts|upload"</code></pre></div>
+    <p class="expected"><code>check_charts</code>, <code>render_charts</code>, <code>seed</code>, <code>silver.relationships_stg_logs_mav_type__…_test</code> (a detached test), <code>silver.stg_logs.run</code>, <code>silver.stg_logs.test</code>, <code>upload_reports</code>.</p></div>
+  <div class="cmd"><div class="box"><pre><code>make airflow ARGS="dags list-runs px4_transform" | head -6</code></pre></div>
+    <p class="expected">recent runs, mostly <code>asset_triggered__…</code>, all <code>success</code>.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Find the transform run that your lesson 9 ingestion started. How long after the ingestion did it begin, and which assets did it consume?</p>
+    <details><summary>Show answer</summary>
+      <p>In <code>px4_transform</code> → Runs, the <code>asset_triggered__…</code> run whose time matches your ingestion's <code>parse_ulogs</code>. It starts within a second or two of that task finishing. The run's details list the triggering asset events: <code>bronze/telemetry_raw</code> and <code>bronze/log_messages_raw</code>. <code>logs_index_raw</code> is missing because <code>load_index</code> was skipped (304).</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>A failing test stops publication</h4>
+    <ol>
+      <li>Create a test that always fails: a <i>singular test</i> is a SELECT that must return zero rows. Save this as <code>dbt/tests/course_always_fails.sql</code>:<br><code>select log_id from {{ ref('stg_logs') }} limit 1</code></li>
+      <li>Let Airflow re-render the DAG, then run it: <code>make airflow ARGS="dags reserialize"</code> and <code>make airflow ARGS="dags trigger px4_transform"</code></li>
+      <li>Watch the graph. After ~30 s <code>silver.stg_logs.test</code> is red (<b>failed</b>), and <b>36 tasks</b> are <b>upstream_failed</b>: every gold model, <code>docs_generate</code>, <code>check_charts</code>, <code>render_charts</code>, <code>upload_reports</code>. The dashboards and reports keep their previous, trusted numbers.</li>
+      <li class="undo"><b>Undo:</b> <code>rm dbt/tests/course_always_fails.sql</code>, <code>make airflow ARGS="dags reserialize"</code>, then <code>make airflow ARGS="dags trigger px4_transform"</code>. All 49 tasks succeed in ~2 minutes. <code>git status</code> is clean.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="c">
+      <p>What starts <code>px4_transform</code>?</p>
+      <button class="opt" data-opt="a">A cron schedule at 03:00</button>
+      <button class="opt" data-opt="b">The last task of <code>px4_ingest_daily</code> calls it</button>
+      <button class="opt" data-opt="c">An asset event: a task that updates a bronze table succeeded</button>
+      <p class="why">The DAGs don't know about each other; they share assets. Any producer of bronze data, including one added later, triggers the transform.</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>Why is one Airflow task per dbt model better than one <code>dbt build</code> task?</p>
+      <button class="opt" data-opt="a">You see exactly which model or test failed, and can retry just that part</button>
+      <button class="opt" data-opt="b">dbt runs faster that way</button>
+      <button class="opt" data-opt="c">dbt can't run more than one model per process</button>
+      <p class="why">It's the same dbt underneath (each task calls the dbt CLI for one node), but the orchestrator now sees the graph.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l13" data-part="Part V · Quality, delivery and operations" data-title="Data quality" data-minutes="45">
+  <div class="kicker">Lesson 13 · 45 min</div>
+  <h2>Data quality</h2>
+  <p class="lead">A pipeline that runs isn't the same as a pipeline you can trust. This lesson covers the layers of checks that keep bad data out of the dashboards, then breaks three of them on purpose.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Name the checks at each stage: ingestion, transformation, publication, end to end.</li>
+    <li>Tell generic, singular and dbt_expectations tests apart, and <code>warn</code> from <code>error</code>.</li>
+    <li>Watch a test, a data contract and a freshness check fail, and fix each.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Stage</th><th>Check</th><th>Here</th></tr></thead>
+    <tbody>
+      <tr><td>Ingestion</td><td>Contract + dead-letter table; size = Content-Length; disk guard</td><td><code>schemas.py</code>, <code>ulog.py</code> (lesson 8)</td></tr>
+      <tr><td>Source</td><td><b>Freshness</b>: is the newest raw data recent enough?</td><td><code>sources.yml</code>: warn after 26 h, error after 48 h</td></tr>
+      <tr><td>Silver/gold</td><td><b>Tests</b> on every build: 52 of them</td><td><code>silver.yml</code>, <code>gold.yml</code>, <code>dbt/tests/</code></td></tr>
+      <tr><td>Gold</td><td><b>Contracts</b>: exact columns and types</td><td><code>contract: enforced</code> in <code>dbt_project.yml</code></td></tr>
+      <tr><td>Publication</td><td>The dashboard gate: validate + render every board</td><td><code>check_charts.py</code> (lesson 14)</td></tr>
+      <tr><td>End to end</td><td><b>Smoke test</b> from a clean install, with assertions</td><td><code>infrastructure/scripts/smoke_test.sh</code></td></tr>
+    </tbody>
+  </table></div>
+  <h4>Kinds of dbt tests</h4>
+  <ul>
+    <li><b>Generic tests</b>, declared in YAML on a column: <code>not_null</code> (13), <code>unique</code> (13), <code>relationships</code> (4: every foreign key exists), <code>accepted_values</code> (2).</li>
+    <li><b>dbt_expectations</b>, a package of richer generic tests: value ranges (7, e.g. <code>wind_speed</code> between 0 and 100), compound uniqueness (4: one row per month × class), regex (1).</li>
+    <li><b>Singular tests</b>: a SELECT in <code>dbt/tests/</code> that must return <b>zero rows</b>. <code>assert_mode_shares_sum_to_one</code> checks that each vehicle class's mode shares add up to 1. It caught a real bug: integer division made every share 0, which a 0–1 range test can't see.</li>
+    <li><b>Severity:</b> <code>error</code> (the default) fails the build and skips everything downstream; <code>warn</code> reports and continues. Two tests here are <code>warn</code>: an unknown vehicle type that would silently become "other", and battery use that can look negative after a mid-flight battery swap.</li>
+  </ul>
+  <h4>Contracts</h4>
+  <p>A gold model with <code>contract: enforced</code> must produce exactly the declared columns and types, checked <i>before</i> the table is written. The dashboards depend on those columns, so a change that would break them fails the build instead.</p>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dbt/models/silver/silver.yml">dbt/models/silver/silver.yml</a> and <a href="../dbt/models/gold/gold.yml">dbt/models/gold/gold.yml</a>: tests and contracts, with comments.</li>
+    <li><a href="../dbt/tests/">dbt/tests/</a>: the two singular tests.</li>
+    <li><a href="../dbt/models/sources/sources.yml">dbt/models/sources/sources.yml</a>: the freshness rule.</li>
+    <li><a href="../infrastructure/scripts/smoke_test.sh">infrastructure/scripts/smoke_test.sh</a>: the end-to-end check (README → "Smoke test").</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make dbt ARGS="test"
+make dbt ARGS="source freshness"</code></pre></div>
+    <p class="expected"><code>Done. PASS=52 WARN=0 ERROR=0</code>; then <code>PASS freshness of bronze.logs_index_raw</code>.</p></div>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Read <a href="../dbt/tests/assert_mode_shares_sum_to_one.sql">assert_mode_shares_sum_to_one.sql</a>. Why couldn't a range test (share between 0 and 1) catch the integer-division bug?</p>
+    <details><summary>Show answer</summary>
+      <p>With integer division every share was <code>0</code>, and 0 <i>is</i> between 0 and 1. A row-level check sees each value as plausible. Only a check on the <i>group</i>, "shares per class add up to 1", sees that they're all wrong together. Good tests encode invariants, not just ranges.</p>
+    </details>
+  </div>
+
+  <div class="lab">
+    <h4>A test catches dirty data</h4>
+    <ol>
+      <li>In <a href="../dbt/models/silver/stg_logs.sql">dbt/models/silver/stg_logs.sql</a>, find <code>nullif(try_cast(json_extract_scalar(payload, '$.wind_speed') as integer), -1) as wind_speed,</code> and remove the cleaning: <code>try_cast(json_extract_scalar(payload, '$.wind_speed') as integer) as wind_speed,</code></li>
+      <li><code>stg_logs</code> is incremental, so rebuild it from scratch together with everything downstream: <code>make dbt ARGS="build -s stg_logs+ --full-refresh"</code></li>
+      <li><code>FAIL 314893 dbt_expectations_expect_column_values_to_be_between_stg_logs_wind_speed__100__0</code>: every <code>-1</code> sentinel is caught. Every downstream model (<code>fct_flight</code>, all of gold) shows <b>SKIP</b>, so the dirty values never reached gold.</li>
+      <li class="undo"><b>Undo:</b> <code>git checkout -- dbt/models/silver/stg_logs.sql</code>, then the same <code>make dbt ARGS="build -s stg_logs+ --full-refresh"</code> → <code>PASS=49 … ERROR=0</code>.</li>
+    </ol>
+  </div>
+  <div class="lab">
+    <h4>A contract protects the dashboards</h4>
+    <ol>
+      <li>In <a href="../dbt/models/gold/gold.yml">dbt/models/gold/gold.yml</a>, under <code>mart_flights_by_class_month</code>, change <code>{name: flight_hours, data_type: double}</code> to <code>data_type: bigint</code>.</li>
+      <li><code>make dbt ARGS="build -s mart_flights_by_class_month"</code> fails before writing: <code>This model has an enforced contract that failed … | flight_hours | DOUBLE | BIGINT | data type mismatch |</code></li>
+      <li class="undo"><b>Undo:</b> <code>git checkout -- dbt/models/gold/gold.yml</code>, then the same build → <code>PASS=2</code>.</li>
+    </ol>
+  </div>
+  <div class="lab">
+    <h4>Freshness notices stale data</h4>
+    <ol>
+      <li>In <a href="../dbt/models/sources/sources.yml">dbt/models/sources/sources.yml</a>, change <code>warn_after: {count: 26, period: hour}</code> to <code>{count: 1, period: hour}</code>.</li>
+      <li><code>make dbt ARGS="source freshness"</code> → <code>WARN freshness of bronze.logs_index_raw</code>: the index was last loaded more than an hour ago. In <code>px4_transform</code> the first task is <code>source_freshness</code>; an <i>error</i>-level result would stop the run before anything is published.</li>
+      <li class="undo"><b>Undo:</b> <code>git checkout -- dbt/models/sources/sources.yml</code>; <code>git status</code> is clean.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>A singular test passes when its SELECT returns…</p>
+      <button class="opt" data-opt="a">exactly one row</button>
+      <button class="opt" data-opt="b">zero rows</button>
+      <button class="opt" data-opt="c">any number of rows without an error</button>
+      <p class="why">The query selects the <i>violations</i>; no violations, no rows.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>When should a test be <code>warn</code> instead of <code>error</code>?</p>
+      <button class="opt" data-opt="a">When it fails often</button>
+      <button class="opt" data-opt="b">Never; all tests should block</button>
+      <button class="opt" data-opt="c">When a failure is worth a look but the data is still safe to publish</button>
+      <p class="why">Blocking on noise trains people to ignore failures. Reserve <code>error</code> for "publishing this would be wrong".</p>
+    </div>
+    <div class="q" data-answer="a">
+      <p>What does an enforced contract check?</p>
+      <button class="opt" data-opt="a">That the model produces exactly the declared column names and types, before writing</button>
+      <button class="opt" data-opt="b">That the values are correct</button>
+      <button class="opt" data-opt="c">That the dashboards render</button>
+      <p class="why">Contracts guard the <i>shape</i>; tests guard the <i>values</i>; the chart gate guards the boards.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l14" data-part="Part V · Quality, delivery and operations" data-title="Visualization and publishing" data-minutes="35">
+  <div class="kicker">Lesson 14 · 35 min</div>
+  <h2>Visualization and publishing: dbt Charts</h2>
+  <p class="lead">The dashboards are code too: YAML files next to the dbt models, validated against them, rendered on every run and published to S3. This lesson covers how a board is built and how the publish gate keeps a broken one from shipping.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Read a board: source, variables (filters), queries, charts.</li>
+    <li>Tell offline validation from execution checks, and what the publish gate requires.</li>
+    <li>Break a board and watch the gate refuse it.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>Dashboards as code:</b> each board is a YAML file in <code>dbt/charts/</code>, versioned and reviewed like any code. Queries use <code>{{ ref('mart_…') }}</code>, so they're tied to dbt models, and they read <b>only gold</b>.</li>
+    <li><b>Anatomy:</b> <code>source</code> (the connection, reusing the dbt profile) · <code>variables</code> (filters, e.g. upload period, vehicle class) · <code>queries</code> (SQL; filters through <code>filter()</code> macros) · <code>charts</code> (type, x, y, color, labels).</li>
+    <li><b>Two kinds of checks:</b>
+      <ul>
+        <li><b>Offline validation</b> (<code>dct validate --strict</code>) compares each query's columns with the dbt model's columns, without touching the database. That only works when every column is qualified (<code>m.logs</code>, not <code>logs</code>), and it can't analyze queries with filter macros.</li>
+        <li><b>Execution</b> (<code>dct render</code>) runs every query on Trino, catching what the offline check can't.</li>
+      </ul></li>
+    <li><b>The publish gate</b> (<code>check_charts.py</code>) requires both to pass. Warnings that only mean "not enough data yet" (an empty chart on a young install) are reported but don't block.</li>
+    <li><b>Two outputs:</b> live boards (<code>dct serve</code> on port 8088, which keeps serving its last results with "Data as of…" if Trino is down; lesson 2), and static HTML/PDF copies rendered by <code>px4_transform</code> and uploaded to <code>s3://reports/&lt;day&gt;/</code>, where a lifecycle rule keeps them 30 days.</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dbt/charts/fleet_overview.yml">dbt/charts/fleet_overview.yml</a>: a board with two filters; read the header comment about qualifying columns.</li>
+    <li><a href="../dbt/charts/pipeline_health.yml">dbt/charts/pipeline_health.yml</a>: a board without filters, fully checked offline.</li>
+    <li><a href="../dbt/dbt_charts.yml">dbt/dbt_charts.yml</a>: the project config (the <code>lakehouse</code> source reuses the dbt profile).</li>
+    <li><a href="../infrastructure/scripts/check_charts.py">infrastructure/scripts/check_charts.py</a>: the gate; read its docstring.</li>
+  </ul>
+
+  <h3>Tour</h3>
+  <ol>
+    <li><a href="http://localhost:8088/fleet_overview/">Fleet overview</a>: change <b>Vehicle class</b> to only <code>vtol</code>; the KPIs and charts re-query.</li>
+    <li><a href="http://localhost:8088/reliability/">Reliability</a>: the share of logs with a PX4-logged error per week, crash ratings, firmware adoption, the most widespread messages.</li>
+    <li><a href="http://localhost:8088/pipeline_health/">Pipeline health</a>: a board about the <i>pipeline</i> itself, built on <code>audit.*</code>.</li>
+    <li>RustFS console → <code>reports</code> → a date: the HTML and PDF copies from the last transform run.</li>
+  </ol>
+
+  <h3>Run it</h3>
+  <div class="cmd"><div class="box"><pre><code>make dct ARGS="render charts/reliability.yml --format text"</code></pre></div>
+    <p class="expected">every chart as text: <code>k_logs … value: 290,755</code>, <code>k_errors … value: 19.6%</code>, then each chart's type, columns and row count, and the top rows of the table.</p></div>
+  <div class="cmd"><div class="box"><pre><code>make dct ARGS="render charts/fleet_overview.yml --format text --var classes=vtol" | grep -A1 k_logs</code></pre></div>
+    <p class="expected"><code>value: 25,142</code>: the same board with the class filter set to VTOL only.</p></div>
+  <p>Before renaming a column in a gold model, ask which boards use it:</p>
+  <div class="cmd"><div class="box"><pre><code>make dct ARGS="impact vehicle_class"</code></pre></div>
+    <p class="expected">the boards and queries that reference <code>vehicle_class</code>, plus a list of queries it "could not analyze" (the ones with filter macros), to check by hand.</p></div>
+  <div class="cmd"><div class="box"><pre><code>make charts-check
+make s3 ARGS="ls s3://reports/ --recursive" | tail -4</code></pre></div>
+    <p class="expected">four <code>OK</code> lines; then the latest <code>…/pipeline_health.html</code>, <code>.pdf</code>, <code>reliability.html</code>, <code>.pdf</code>.</p></div>
+
+  <div class="lab">
+    <h4>The gate refuses a broken board</h4>
+    <ol>
+      <li>In <a href="../dbt/charts/pipeline_health.yml">dbt/charts/pipeline_health.yml</a>, in the <code>kpis</code> query, change <code>sum(p.records_rejected) AS rejected,</code> to <code>sum(p.records_dropped) AS rejected,</code> (a column that doesn't exist).</li>
+      <li><code>make charts-check</code>: three boards <code>OK</code>, and <code>FAIL charts/pipeline_health.yml</code> with <code>ERR-DBT-MODEL-COLUMN-MISSING: Query 'kpis' references column 'records_dropped' of dbt model 'mart_pipeline_runs', but the model's SQL does not produce it</code> (offline) and <code>ERR-WAREHOUSE-RUNTIME</code> (on execution). The command exits non-zero; in <code>px4_transform</code> that stops <code>render_charts</code> and <code>upload_reports</code>.</li>
+      <li class="undo"><b>Undo:</b> <code>git checkout -- dbt/charts/pipeline_health.yml</code>, then <code>make charts-check</code> → four <code>OK</code>.</li>
+    </ol>
+  </div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="b">
+      <p>Why do the board queries qualify every column (<code>m.logs</code>)?</p>
+      <button class="opt" data-opt="a">Trino requires it</button>
+      <button class="opt" data-opt="b">So offline validation can check each column against the dbt model without running the query</button>
+      <button class="opt" data-opt="c">It's faster</button>
+      <p class="why">Unqualified columns are "ambiguous without a schema" to a static checker.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>Which layer should dashboards read?</p>
+      <button class="opt" data-opt="a">Bronze, for freshness</button>
+      <button class="opt" data-opt="b">Silver, for detail</button>
+      <button class="opt" data-opt="c">Gold: small, tested, with a contract</button>
+      <p class="why">Gold is the published interface: its shape is fixed by contracts, and it's rebuilt only after tests pass.</p>
+    </div>
+  </div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="l15" data-part="Part V · Quality, delivery and operations" data-title="Operations" data-minutes="40">
+  <div class="kicker">Lesson 15 · 40 min</div>
+  <h2>Operations: keeping it healthy</h2>
+  <p class="lead">Running a platform every day creates small files, old snapshots and raw data that must eventually go. This last lesson covers maintenance, retention and recovery, and cleans up your sandbox.</p>
+
+  <div class="goals"><b>You will</b><ul>
+    <li>Explain compaction, snapshot expiry and orphan-file removal, and run them.</li>
+    <li>Know how long each kind of data is kept, and why.</li>
+    <li>Know how to recover from the common accidents.</li>
+  </ul></div>
+
+  <h3>Concepts</h3>
+  <ul>
+    <li><b>Compaction</b> (<code>optimize</code>) rewrites a partition's small files into fewer large ones. The data doesn't change; queries open fewer files. It commits a <code>replace</code> snapshot.</li>
+    <li><b>Snapshot expiry</b> (<code>expire_snapshots</code>, 7 days) forgets snapshots older than the threshold and deletes files only they referenced. That's the trade-off: <b>time travel reaches back 7 days</b>, and storage doesn't grow forever.</li>
+    <li><b>Orphan files</b> (<code>remove_orphan_files</code>, 7 days) are files no snapshot references, e.g. from a commit that failed and was retried. They're safe to delete once old enough that no write in progress could still be using them.</li>
+  </ul>
+  <h4>Retention at a glance</h4>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Data</th><th>Kept</th><th>By</th></tr></thead>
+    <tbody>
+      <tr><td>Raw flight files (<code>landing/px4/ulog/</code>)</td><td>1 day</td><td>RustFS lifecycle rule</td></tr>
+      <tr><td>Raw index snapshots (<code>landing/px4/index/</code>)</td><td>7 days</td><td>RustFS lifecycle rule</td></tr>
+      <tr><td>Reports (<code>s3://reports/</code>)</td><td>30 days</td><td>RustFS lifecycle rule</td></tr>
+      <tr><td>Old Iceberg snapshots (time travel)</td><td>7 days</td><td><code>px4_maintenance</code>, weekly</td></tr>
+      <tr><td>Dropped tables</td><td>7 days</td><td>Lakekeeper soft delete</td></tr>
+      <tr><td>Bronze, silver, gold data</td><td>Forever</td><td>Nothing deletes it</td></tr>
+    </tbody>
+  </table></div>
+  <h4>Recovery recipes</h4>
+  <ul>
+    <li><b>A table was dropped</b> → Lakekeeper → Deleted → Restore (lesson 6).</li>
+    <li><b>Silver or gold is wrong</b> → fix the SQL, rebuild from bronze (<code>make dbt ARGS="build -s model+ --full-refresh"</code> for incremental models; lesson 13).</li>
+    <li><b>Yesterday's ingestion failed</b> → trigger <code>px4_ingest_daily</code> with <code>{"day": "…"}</code>; it skips what's already done (lesson 9).</li>
+    <li><b>A container died</b> → <code>make up</code>; data lives in volumes (lesson 2).</li>
+    <li><b>"Does the whole thing still work from zero?"</b> → the smoke test from a clean clone (README → "Smoke test").</li>
+  </ul>
+
+  <h3>In this repo</h3>
+  <ul class="files">
+    <li><a href="../dags/px4_maintenance.py">dags/px4_maintenance.py</a>: lists every table, then runs the three procedures per table through Trino, at most 2 tables at a time, and returns what it compacted.</li>
+    <li><a href="../infrastructure/setup/setup.py">infrastructure/setup/setup.py</a>: the retention rules and the soft-delete period, set once.</li>
+  </ul>
+
+  <h3>Run it</h3>
+  <p>Count data files per table, run maintenance, count again:</p>
+  <div class="cmd"><div class="box"><pre><code>for t in telemetry_raw log_messages_raw logs_index_raw; do make trino SQL="SELECT '$t', count(*) FROM bronze.\"$t\$files\""; done</code></pre></div>
+    <p class="expected">one line per table, e.g. <code>"telemetry_raw","9"</code>, <code>"log_messages_raw","9"</code>, <code>"logs_index_raw","23"</code>.</p></div>
+  <div class="cmd"><div class="box"><pre><code>make airflow ARGS="dags unpause px4_maintenance"
+make airflow ARGS="dags trigger px4_maintenance"</code></pre></div>
+    <p class="expected">a run of about 25 s: <code>iceberg_tables</code>, then one mapped <code>maintain</code> task per table. Each task's <b>Storage → XCom</b> says whether it compacted (<code>{"table": "bronze.telemetry_raw", "compacted": true, "files_removed": …, "files_added": …}</code>). Then pause it again: <code>make airflow ARGS="dags pause px4_maintenance"</code>.</p></div>
+  <p>Run the file count again: e.g. <code>9 → 5</code>, <code>9 → 5</code>, <code>23 → 22</code>. That's one file per partition: <code>telemetry_raw</code> is partitioned by upload day and had 5 days. Lakekeeper's Health tab for <code>telemetry_raw</code> now reports fewer, larger files.</p>
+
+  <div class="exercise">
+    <p><b>Exercise.</b> Can you time-travel to a snapshot from 8 days ago? Why not, and what would you change to keep 30 days?</p>
+    <details><summary>Show answer</summary>
+      <p>No. The weekly <code>expire_snapshots(retention_threshold =&gt; '7d')</code> forgot every snapshot older than 7 days and deleted the files only they referenced. To keep 30 days, raise <code>RETENTION</code> in <code>dags/px4_maintenance.py</code>. The cost is storage: every replaced file is kept for 30 days instead of 7.</p>
+    </details>
+  </div>
+  <div class="exercise">
+    <p><b>Exercise.</b> Which loss would be worse: the <code>rustfs-data</code> volume or the <code>postgres-data</code> volume?</p>
+    <details><summary>Show answer</summary>
+      <p>Both are serious, in different ways. Losing <code>rustfs-data</code> loses every byte of data. Losing <code>postgres-data</code> loses the <b>catalog</b> and Airflow's history: the Parquet files would still be in RustFS, but no engine would know which files form which table or which snapshot is current. The catalog is small, but it is critical state. Production platforms back up both.</p>
+    </details>
+  </div>
+
+  <h3>Clean up your sandbox</h3>
+  <div class="cmd"><div class="box"><pre><code>make trino SQL="DROP TABLE sandbox.flights"
+make trino SQL="DROP SCHEMA sandbox"</code></pre></div>
+    <p class="expected"><code>DROP TABLE</code>; then the schema drop fails with <code>Namespace with name 'sandbox' is not empty</code>. The dropped table is still soft-deleted, so it can be restored for 7 days, and it counts as content. Leave the empty <code>sandbox</code> schema; after 7 days <code>DROP SCHEMA sandbox</code> succeeds. This is one consequence of soft delete you'll meet in real platforms too.</p></div>
+
+  <h3>Quiz</h3>
+  <div class="quiz">
+    <div class="q" data-answer="a">
+      <p>Does compaction change the data in a table?</p>
+      <button class="opt" data-opt="a">No: same rows, fewer files, committed as a new snapshot</button>
+      <button class="opt" data-opt="b">Yes, it removes duplicates</button>
+      <button class="opt" data-opt="c">Yes, it deletes old rows</button>
+      <p class="why">Queries return the same result before and after; only the file layout changed.</p>
+    </div>
+    <div class="q" data-answer="c">
+      <p>What limits how far back time travel goes here?</p>
+      <button class="opt" data-opt="a">The lifecycle rules</button>
+      <button class="opt" data-opt="b">Lakekeeper's soft delete</button>
+      <button class="opt" data-opt="c">Snapshot expiry in the weekly maintenance (7 days)</button>
+      <p class="why">Lifecycle rules apply to landing and reports, not to Iceberg tables. Soft delete is about dropped tables, not old versions of live ones.</p>
+    </div>
+  </div>
+
+  <div class="note"><b>You've finished the course.</b> You've followed a flight from an HTTP endpoint to a dashboard, through landing, Iceberg tables, a catalog, an orchestrator, dbt models and tests, and a publish gate, and you've broken and repaired each layer. Ideas to go further:
+    <ul>
+      <li>add a gold mart, a test and a chart for a new question;</li>
+      <li>run the smoke test from a clean clone;</li>
+      <li>read <code>DECISIONS.md</code> to see why each choice was made.</li>
+    </ul></div>
+
+  <label class="complete"><input type="checkbox"> Mark lesson complete</label>
+</article>
+
+<!-- lessons -->
+
+<!-- ============================================================================= -->
+<article class="lesson" id="glossary" data-part="Appendix" data-title="Glossary" data-appendix>
+  <div class="kicker">Appendix</div>
+  <h2>Glossary</h2>
+  <p class="lead">Every data engineering term the course uses, in one place. The lesson number says where it's taught.</p>
+  <dl class="glossary">
+    <dt>Asset (Airflow) · L12</dt><dd>A named piece of data (here, an Iceberg table URI). A task that updates it emits an event, and a DAG scheduled on it runs. That is data-aware scheduling, as opposed to a clock.</dd>
+    <dt>Audit table · L8</dt><dd>A table that records what the pipeline did: runs, counts, statuses (<code>audit.ingestion_runs</code>, <code>audit.ulog_downloads</code>). It lets you answer "what happened?" with SQL.</dd>
+    <dt>Backfill · L9</dt><dd>Running a pipeline for past periods it missed or must redo. Here: trigger <code>px4_ingest_daily</code> with <code>{"day": "…"}</code>.</dd>
+    <dt>Batch processing · L1</dt><dd>Processing data in scheduled chunks (one day of uploads), as opposed to streaming each record as it arrives.</dd>
+    <dt>Bronze / silver / gold · L1, L11</dt><dd>The medallion layers. Bronze is raw data as received, append-only. Silver is cleaned, typed and modeled. Gold is aggregated tables for one use (a dashboard), with a fixed contract.</dd>
+    <dt>Catalog · L6</dt><dd>The service that maps a table name to its current metadata file and swaps that pointer atomically on each commit. Here, Lakekeeper.</dd>
+    <dt>Compaction · L15</dt><dd>Rewriting many small data files into fewer large ones, so queries open fewer files (Iceberg <code>optimize</code>).</dd>
+    <dt>Conditional GET · L3</dt><dd>An HTTP request with <code>If-None-Match: &lt;ETag&gt;</code>. The server answers <b>304 Not Modified</b> with no body when the resource hasn't changed.</dd>
+    <dt>Data contract · L11, L13</dt><dd>A promise about a table's columns and types. dbt enforces it on gold, so the build fails instead of the dashboard breaking silently.</dd>
+    <dt>Dead-letter table · L8</dt><dd>Where records that fail validation go, with a reason, instead of crashing the load or vanishing (<code>bronze.rejected_records</code>).</dd>
+    <dt>DAG · L9</dt><dd>Directed acyclic graph: tasks plus the dependencies between them. In Airflow, a Python file that defines one.</dd>
+    <dt>Dimension / fact · L11</dt><dd>A fact table records events or measurements (one row per flight). A dimension describes the things they refer to (vehicle, date, flight mode). Together they form a star schema.</dd>
+    <dt>Dynamic task mapping · L9</dt><dd>Creating N copies of a task at run time from a list (one task per batch of ULogs).</dd>
+    <dt>ELT / ETL · L1</dt><dd>Extract-Load-Transform: land raw data first, transform it later with SQL in the warehouse. ETL transforms before loading.</dd>
+    <dt>Grain · L11</dt><dd>What one row of a table represents ("one flight", "one vehicle class per month"). Every aggregation question starts here.</dd>
+    <dt>Idempotency · L3, L8</dt><dd>Running the same step twice gives the same result as running it once: no duplicates, no harm. It makes retries safe.</dd>
+    <dt>Incremental model · L10</dt><dd>A dbt model that processes only new rows on each run (MERGE), instead of rebuilding from scratch.</dd>
+    <dt>Landing zone · L4</dt><dd>Object storage holding source files exactly as received, before any parsing. It's a replayable, auditable copy of the source.</dd>
+    <dt>Lakehouse · L1</dt><dd>Open table formats on cheap object storage, queried by SQL engines: warehouse features (tables, ACID, SQL) on a data-lake substrate.</dd>
+    <dt>Lifecycle rule · L4</dt><dd>An object-storage rule that deletes (or moves) objects after N days. It needs no job.</dd>
+    <dt>Lineage · L10</dt><dd>Which tables each table is built from. dbt derives it from <code>ref()</code> and <code>source()</code>.</dd>
+    <dt>Manifest · L4</dt><dd>A small file written <i>last</i> that describes a landed batch (ETag, size, sha256). Its presence means the batch is complete.</dd>
+    <dt>Materialization · L10</dt><dd>How dbt persists a model: view, table, incremental, snapshot…</dd>
+    <dt>Orchestration · L9</dt><dd>Deciding what runs when, in which order, with retries and alerts. It doesn't do the work itself.</dd>
+    <dt>Partitioning · L5, L7</dt><dd>Splitting a table's files by a column's value (e.g. month of <code>log_date</code>), so a filtered query skips whole partitions (pruning).</dd>
+    <dt>SCD2 · L11</dt><dd>Slowly changing dimension, type 2: keep every version of a row, with <code>valid_from</code> / <code>valid_to</code>, instead of overwriting it.</dd>
+    <dt>Schema evolution · L5</dt><dd>Changing a table's columns (add, rename, widen) without rewriting its data.</dd>
+    <dt>Snapshot (Iceberg) · L5</dt><dd>The complete state of a table after one commit. Old snapshots enable time travel until they're expired.</dd>
+    <dt>Soft delete · L6</dt><dd>A dropped table is hidden but kept for a while (7 days here), so it can be restored.</dd>
+    <dt>Source freshness · L13</dt><dd>A check that the newest raw data is recent enough, so the pipeline doesn't publish yesterday's numbers as today's.</dd>
+    <dt>Table format · L5</dt><dd>A specification (Apache Iceberg here) that turns a folder of data files into a table with a schema, snapshots and atomic commits.</dd>
+    <dt>Time travel · L5</dt><dd>Querying a table as it was at an earlier snapshot.</dd>
+  </dl>
+</article>
+
+<!-- ============================================================================= -->
+<article class="lesson" id="cheatsheet" data-part="Appendix" data-title="Cheat sheet" data-appendix>
+  <div class="kicker">Appendix</div>
+  <h2>Cheat sheet</h2>
+  <p class="lead">Every command in one place. Run them from the repo root. The web UIs are on the <a href="../infrastructure/portal.html">portal</a>.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>make up</code></td><td>Build (cached) and start the stack; waits until everything is healthy</td></tr>
+      <tr><td><code>make down</code></td><td>Stop the stack, keep the data</td></tr>
+      <tr><td><code>make ps</code> · <code>make logs S=airflow</code></td><td>Container status · follow one service's logs</td></tr>
+      <tr><td><code>make portal</code> · <code>make course</code></td><td>Open the start page · this course</td></tr>
+      <tr><td><code>make trino</code> · <code>make trino SQL='…'</code></td><td>Trino SQL shell · run one statement (single quotes keep <code>$snapshots</code> intact)</td></tr>
+      <tr><td><code>make s3 ARGS="ls s3://landing/px4/"</code></td><td>AWS CLI against RustFS</td></tr>
+      <tr><td><code>make lifecycle</code></td><td>The RustFS rules that expire old files</td></tr>
+      <tr><td><code>make airflow ARGS="dags list"</code></td><td>Airflow CLI</td></tr>
+      <tr><td><code>make dbt ARGS="build -s tag:gold"</code></td><td>dbt (project at <code>dbt/</code>)</td></tr>
+      <tr><td><code>make dct ARGS="render charts/reliability.yml --format text"</code></td><td>dbt Charts CLI</td></tr>
+      <tr><td><code>make charts-check</code></td><td>Validate and render every dashboard (the publish gate)</td></tr>
+      <tr><td><code>make psql</code> · <code>make psql DB=lakekeeper</code></td><td>PostgreSQL shell</td></tr>
+      <tr><td><code>make test</code></td><td>Unit tests of <code>drone_ingest</code> (needs uv)</td></tr>
+      <tr><td><code>infrastructure/scripts/smoke_test.sh</code></td><td>The whole pipeline, API to dashboards, with assertions</td></tr>
+      <tr><td><code>make reset</code></td><td><b>Deletes all data.</b> Not used in this course.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Trigger ingestion safely</h3>
+  <div class="cmd"><div class="box"><pre><code>make airflow ARGS="dags unpause px4_ingest_daily"   # only if PX4_MAX_ULOGS_PER_RUN is set in .env
+make airflow ARGS="dags trigger px4_ingest_daily -c '{\"max_ulogs\": 2}'"
+make airflow ARGS="dags pause px4_ingest_daily"</code></pre></div>
+    <p class="expected">a manual run that downloads at most 2 flight logs, then <code>px4_transform</code> starts by itself.</p></div>
+</article>
+
+</main>
+</div>
+
+<script>
+(function () {
+  const STORE = "px4-course-progress";
+  const lessons = [...document.querySelectorAll("article.lesson")];
+  const counted = lessons.filter((a) => !a.hasAttribute("data-appendix"));
+
+  // --- progress (localStorage can be missing or blocked: the page works without it) ---
+  function load() { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } }
+  function save(p) { try { localStorage.setItem(STORE, JSON.stringify(p)); } catch { /* not persisted */ } }
+  let progress = load();
+
+  // --- sidebar, built from the articles ---
+  const toc = document.getElementById("toc");
+  let currentPart = null, list = null;
+  lessons.forEach((a, i) => {
+    if (a.dataset.part !== currentPart) {
+      currentPart = a.dataset.part;
+      const h = document.createElement("div"); h.className = "part"; h.textContent = currentPart; toc.appendChild(h);
+      list = document.createElement("ul"); toc.appendChild(list);
+    }
+    const li = document.createElement("li");
+    const num = a.hasAttribute("data-appendix") ? "" : String(counted.indexOf(a));
+    li.innerHTML = `<a href="#${a.id}"><span class="num">${num}</span><span>${a.dataset.title}</span><span class="done"></span></a>`;
+    list.appendChild(li);
+  });
+
+  // --- prev / next, and the completion checkbox ---
+  lessons.forEach((a, i) => {
+    const pager = document.createElement("div"); pager.className = "pager";
+    const prev = lessons[i - 1], next = lessons[i + 1];
+    if (prev) pager.insertAdjacentHTML("beforeend", `<a class="prev" href="#${prev.id}"><small>← Previous</small>${prev.dataset.title}</a>`);
+    if (next) pager.insertAdjacentHTML("beforeend", `<a class="next" href="#${next.id}"><small>Next →</small>${next.dataset.title}</a>`);
+    a.appendChild(pager);
+    const box = a.querySelector(".complete input");
+    if (box) {
+      box.checked = !!progress[a.id];
+      box.addEventListener("change", () => { progress[a.id] = box.checked; save(progress); renderProgress(); });
+    }
+  });
+
+  function renderProgress() {
+    const done = counted.filter((a) => progress[a.id]).length;
+    document.getElementById("progress-label").textContent = `${done} of ${counted.length} lessons done`;
+    document.getElementById("progress-bar").style.width = `${(100 * done) / counted.length}%`;
+    toc.querySelectorAll("a").forEach((link) => {
+      link.querySelector(".done").textContent = progress[link.getAttribute("href").slice(1)] ? "✓" : "";
+    });
+  }
+
+  // --- routing: one lesson at a time, by hash ---
+  function show() {
+    const id = location.hash.slice(1);
+    const target = lessons.find((a) => a.id === id) || counted.find((a) => !progress[a.id]) || lessons[0];
+    lessons.forEach((a) => a.classList.toggle("shown", a === target));
+    toc.querySelectorAll("a").forEach((l) => l.classList.toggle("active", l.getAttribute("href") === "#" + target.id));
+    document.body.classList.remove("menu-open");
+    document.getElementById("menu").setAttribute("aria-expanded", "false");
+    window.scrollTo(0, 0);
+  }
+  window.addEventListener("hashchange", show);
+  document.getElementById("menu").addEventListener("click", (e) => {
+    const open = document.body.classList.toggle("menu-open");
+    e.currentTarget.setAttribute("aria-expanded", String(open));
+  });
+
+  // --- copy buttons on command blocks ---
+  document.querySelectorAll(".cmd .box").forEach((box) => {
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "copy"; btn.textContent = "Copy";
+    btn.addEventListener("click", async () => {
+      const text = box.querySelector("code").innerText;
+      try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
+      catch {  // clipboard API unavailable (some file:// contexts): select the text instead
+        const range = document.createRange(); range.selectNodeContents(box.querySelector("code"));
+        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); btn.textContent = "Selected";
+      }
+      setTimeout(() => (btn.textContent = "Copy"), 1500);
+    });
+    box.appendChild(btn);
+  });
+
+  // --- quizzes: click an option, see right/wrong and why ---
+  document.querySelectorAll(".quiz .q").forEach((q) => {
+    q.querySelectorAll(".opt").forEach((opt) => opt.addEventListener("click", () => {
+      q.querySelectorAll(".opt").forEach((o) => o.classList.remove("right", "wrong"));
+      opt.classList.add(opt.dataset.opt === q.dataset.answer ? "right" : "wrong");
+      q.querySelector(`.opt[data-opt="${q.dataset.answer}"]`).classList.add("right");
+      q.classList.add("answered");
+    }));
+  });
+
+  // --- stack badge: same reachability ping as infrastructure/portal.html ---
+  const PINGS = ["http://localhost:8080/api/v2/monitor/health", "http://localhost:9000/health",
+                 "http://localhost:8181/health", "http://localhost:8085/v1/info", "http://localhost:8088/"];
+  async function ping(url) {
+    const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 3000);
+    try { await fetch(url, { mode: "no-cors", cache: "no-store", signal: ctrl.signal }); return true; }
+    catch { return false; } finally { clearTimeout(timer); }
+  }
+  async function checkStack() {
+    const badge = document.getElementById("stack");
+    if (location.protocol === "data:") { badge.textContent = "Stack: n/a here"; return; }  // previewers block localhost
+    const up = (await Promise.all(PINGS.map(ping))).filter(Boolean).length;
+    badge.className = "stack " + (up === PINGS.length ? "up" : "down");
+    badge.textContent = up === PINGS.length ? "Stack: 5/5 up" : `Stack: ${up}/5 up`;
+  }
+  setInterval(() => { if (document.visibilityState === "visible") checkStack(); }, 30000);
+
+  renderProgress();
+  show();
+  checkStack();
+})();
+</script>
+</body>
+</html>

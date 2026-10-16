@@ -105,3 +105,4 @@ One entry per decision. Format: context → decision → consequences. Newer dec
   - Fewer containers, less code (`drone_ingest` lost its purge, prune and healthcheck code), and `make up` needs no extra wait script: every one-shot job is a dependency of a service, so `docker compose up --wait` checks its exit code.
   - Each dbt build still soft-deletes 4 temporary objects in `silver` (three `__dbt_tmp` views of the incremental models and the snapshot's temp table). They expire by themselves after 7 days.
   - Airflow's processes share one container: a crash restarts all of them. Acceptable for a single-laptop prototype.
+  - The Airflow image bakes in `drone_ingest`, so `make up` builds (cached) on every start. Without that, the containers silently kept the pre-Phase 10 package (CLAUDE.md, Phase 10 finding 8).

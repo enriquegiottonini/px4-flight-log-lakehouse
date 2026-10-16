@@ -55,8 +55,10 @@ Requirements:
 
 ```bash
 make env      # .env with random secrets (never commit it)
-make up       # builds the Airflow image the first time (~5 min), then waits until everything is healthy
+make up       # builds the Airflow image (~5 min the first time, cached after), then waits until everything is healthy
 ```
+
+**Learning the project?** `make course` opens a hands-on course ([course/index.html](course/index.html)): 16 lessons, from the big picture to operations, each with UI tours, commands, exercises, break-and-fix labs and quizzes.
 
 `make portal` opens a start page with every UI in one place ([infrastructure/portal.html](infrastructure/portal.html)), and shows which ones are reachable.
 
@@ -108,6 +110,7 @@ make trino SQL="SELECT count(*) FROM gold.mart_flight_envelope"
 make help                      # every target
 make ps | make logs S=trino    # status / follow one service's logs
 make portal                    # start page: every UI in one place
+make course                    # the hands-on course
 make trino SQL="SELECT vehicle_class, sum(logs) FROM gold.mart_flights_by_class_month GROUP BY 1"
 make airflow ARGS="dags list"
 make dbt ARGS="build -s +fct_flight"
