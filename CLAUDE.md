@@ -765,7 +765,7 @@ curl -s localhost:8181/management/v1/warehouse | python3 -m json.tool | grep -A3
 ├── dags/                        # Airflow DAGs: px4_ingest_daily, px4_transform, px4_maintenance (+ px4_common helpers)
 ├── dbt/{models/{sources,silver,gold},seeds,snapshots,macros,tests,charts}/  # + dbt_charts.yml (dct project config)
 ├── course/index.html            # hands-on course: 16 lessons + labs, every command verified (`make course`)
-└── presentation/                # class script (Spanish) + plan B reports
+└── presentation/                # class script (Spanish), slides.html (`make slides`; numbers from scripts/slides_data.py) + plan B reports
 ```
 
 Rule: files that configure, build or run services go in `infrastructure/`. Code that moves or transforms data (`ingest/`, `dags/`, `dbt/`) stays at the root.

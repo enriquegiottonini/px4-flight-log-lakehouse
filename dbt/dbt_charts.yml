@@ -1,5 +1,10 @@
 # dbt Charts project config (CLI `dct`). Boards live in charts/ and query gold through the dbt profile,
 # so there is no second set of credentials: profiles.yml reads TRINO_HOST/PORT/USER from env vars.
+
+# No query-result cache: dbt Charts' default keeps results for 24h, so boards kept showing numbers from
+# before the latest px4_transform run. The board queries read small gold tables, so re-querying is cheap.
+cache: false
+
 sources:
   lakehouse:
     type: dbt_profile

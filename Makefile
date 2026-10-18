@@ -5,7 +5,7 @@ COMPOSE := docker compose  # finds infrastructure/docker-compose.yml via COMPOSE
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset ps portal course logs config psql s3 lifecycle trino airflow dbt dct charts-check test
+.PHONY: help env up down reset ps portal course slides logs config psql s3 lifecycle trino airflow dbt dct charts-check test
 
 help:  ## List targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F':.*## ' '{printf "  make %-13s %s\n", $$1, $$2}'
@@ -35,6 +35,10 @@ portal:  ## Open the start page: every web UI in one place, with a reachability 
 
 course:  ## Open the hands-on course: 16 lessons on this pipeline and data engineering
 	@open course/index.html 2>/dev/null || xdg-open course/index.html
+
+slides:  ## Open the class presentation (Spanish); refreshes its numbers from Trino if the stack is up
+	@python3 infrastructure/scripts/slides_data.py
+	@open presentation/slides.html 2>/dev/null || xdg-open presentation/slides.html
 
 logs:  ## Follow logs: make logs [S=service]
 	$(COMPOSE) logs -f $(S)

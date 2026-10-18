@@ -111,6 +111,7 @@ make help                      # every target
 make ps | make logs S=trino    # status / follow one service's logs
 make portal                    # start page: every UI in one place
 make course                    # the hands-on course
+make slides                    # the class presentation (4 slides, Spanish, live numbers)
 make trino SQL="SELECT vehicle_class, sum(logs) FROM gold.mart_flights_by_class_month GROUP BY 1"
 make airflow ARGS="dags list"
 make dbt ARGS="build -s +fct_flight"

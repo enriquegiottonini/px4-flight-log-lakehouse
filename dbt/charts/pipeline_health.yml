@@ -7,7 +7,8 @@ queries:
   kpis: |
     SELECT
       count(*) AS runs,
-      sum(p.records_inserted) AS inserted,
+      sum(CASE WHEN p.entity = 'logs_index' THEN p.records_inserted ELSE 0 END) AS index_rows,
+      sum(CASE WHEN p.entity = 'ulog_parse' THEN p.records_inserted ELSE 0 END) AS ulogs_parsed,
       sum(p.records_rejected) AS rejected,
       sum(CASE WHEN p.entity = 'ulog_fetch' THEN p.bytes ELSE 0 END) / 1e6 AS ulog_mb
     FROM {{ ref('mart_pipeline_runs') }} AS p
@@ -34,11 +35,17 @@ charts:
     type: kpi
     value: runs
     style: {value: {format: integer}}
-  k_inserted:
-    label: Records inserted (index rows + parsed ULogs)
+  k_index:
+    label: Index records inserted
     query: kpis
     type: kpi
-    value: inserted
+    value: index_rows
+    style: {value: {format: integer}}
+  k_ulogs:
+    label: ULogs parsed
+    query: kpis
+    type: kpi
+    value: ulogs_parsed
     style: {value: {format: integer}}
   k_rejected:
     label: Records rejected or failed
@@ -78,6 +85,6 @@ charts:
         run_id: {label: Run id}
 
 rows:
-  - cols: [k_runs, k_inserted, k_rejected, k_mb]
+  - cols: [k_runs, k_index, k_ulogs, k_rejected, k_mb]
   - ulogs
   - runs
